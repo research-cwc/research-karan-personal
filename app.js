@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
-} from "./ledger.js?v=5";
+} from "./ledger.js?v=6";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -36,7 +36,12 @@ let editingId = null;
 let openEntryId = null;
 let openPerson = null;
 let pendingDelete = null;
+let pendingSettle = null;
 let settleView = "simple";
+
+const MAX_PAISE = 100000000;          // Rs 10,00,000 — matches the security rules
+const MIN_DATE = "2024-01-01";
+const MAX_DATE = "2030-12-31";
 
 const $ = (id) => document.getElementById(id);
 
@@ -105,20 +110,58 @@ async function firebaseStore() {
   };
 }
 
+/* ── Saving ─────────────────────────────────────── */
+/** Firestore's own messages are no use to someone on a beach. */
+function friendlyError(err) {
+  const code = (err && err.code) || "";
+  if (code.includes("permission-denied")) {
+    return "The register would not accept that. Check the names are still on the trip, and that the amount looks right.";
+  }
+  if (code.includes("unavailable") || code.includes("deadline")) {
+    return "Could not reach the register just now. It will sync once you have signal.";
+  }
+  if (code.includes("not-found")) return "That entry has already been deleted by someone else.";
+  return (err && err.message) || "Something went wrong.";
+}
+
+/** Firestore applies a write locally at once but only settles its promise when
+ *  the server acknowledges it. Offline that never happens, so waiting on it
+ *  would leave the button stuck on a save that has in fact already gone
+ *  through on this device — and people would add the expense twice. We give the
+ *  server a few seconds, then carry on and say it will sync. */
+async function saveSoon(work) {
+  const ack = work();
+  let failed = null;
+  ack.catch((err) => { failed = err; });
+  const outcome = await Promise.race([
+    ack.then(() => "saved", () => "failed"),
+    new Promise((r) => setTimeout(() => r("pending"), 4000)),
+  ]);
+  if (outcome === "failed") throw failed || new Error("Save failed");
+  if (outcome === "pending") {
+    showStatus("Saved on this device. It will reach everyone else once you have signal.");
+  } else {
+    showStatus("");
+  }
+  return outcome;
+}
+
 /* ── Form: reading the current state ───────────────────────── */
 function selectedParticipants() { return PEOPLE.filter((p) => participants.has(p)); }
 function selectedPayers() { return PEOPLE.filter((p) => payers.has(p)); }
 
-function readAmountRows(container) {
+function readAmountRows(container, { allowNegative = false } = {}) {
   const out = {};
   let bad = null;
+  let negative = null;
   for (const input of container.querySelectorAll("input")) {
     const raw = input.value.trim();
     const v = raw === "" ? 0 : (input.dataset.kind === "number" ? parseNumber(raw) : parseRupees(raw));
     if (isNaN(v)) bad = input.dataset.name;
+    else if (v < 0 && !allowNegative) negative = input.dataset.name;
     out[input.dataset.name] = isNaN(v) ? 0 : v;
   }
-  return { values: out, bad };
+  return { values: out, bad, negative };
 }
 
 function currentPayers(total) {
@@ -131,8 +174,9 @@ function currentPayers(total) {
 
 function currentSplitInput() {
   const method = $("splitMode").value;
-  if (method === "equal") return { values: {}, bad: null };
-  return readAmountRows($("splitRows"));
+  if (method === "equal") return { values: {}, bad: null, negative: null };
+  // "Equally, plus extras" is the one place a negative reads as a discount.
+  return readAmountRows($("splitRows"), { allowNegative: method === "adjust" });
 }
 
 /* ── Form: rendering ───────────────────────────────────────── */
@@ -179,7 +223,7 @@ function renderPayerRows() {
   const prev = Object.fromEntries([...rows.querySelectorAll("input")].map((i) => [i.dataset.name, i.value]));
   rows.innerHTML = "";
   for (const p of PEOPLE) {
-    const row = document.createElement("label");
+    const row = document.createElement("div");
     row.className = "amount-row" + (payers.has(p) ? " is-on" : "");
     const tick = document.createElement("button");
     tick.type = "button";
@@ -240,6 +284,7 @@ function renderSplitRows() {
     for (const p of selectedParticipants()) {
       const row = document.createElement("label");
       row.className = "amount-row is-on";
+      row.htmlFor = `split-${p}`;
       const tag = document.createElement("span");
       tag.className = "row-name";
       tag.textContent = p === me ? `${p} (you)` : p;
@@ -252,6 +297,7 @@ function renderSplitRows() {
       input.type = "text";
       input.inputMode = "decimal";
       input.placeholder = "0";
+      input.id = `split-${p}`;
       input.dataset.name = p;
       input.dataset.kind = isMoney ? "money" : "number";
       input.value = prev[p] || "";
@@ -381,6 +427,8 @@ function resetForm() {
   $("desc").value = "";
   $("note").value = "";
   $("date").value = new Date().toLocaleDateString("en-CA");
+  $("date").min = MIN_DATE;
+  $("date").max = MAX_DATE;
   selectedCat = "food";
   participants = new Set(PEOPLE);
   payers = new Set(me ? [me] : []);
@@ -452,8 +500,10 @@ async function onSubmit(ev) {
 
   const amountPaise = parseRupees($("amount").value);
   if (isNaN(amountPaise) || amountPaise <= 0) return showError("Enter an amount greater than zero.");
+  if (amountPaise > MAX_PAISE) return showError(`${money(MAX_PAISE)} is the most a single entry can be. Split it into a few if it really was that big.`);
   const date = $("date").value;
   if (!date) return showError("Pick a date.");
+  if (date < MIN_DATE || date > MAX_DATE) return showError("That date looks wrong — check the year.");
   const note = $("note").value.trim();
 
   let entry;
@@ -461,6 +511,7 @@ async function onSubmit(ev) {
   if (settleMode) {
     const from = $("payFrom").value;
     const to = $("payTo").value;
+    if (!from || !to) return showError("Pick who paid and who they paid.");
     if (from === to) return showError("A payment needs two different people.");
     entry = { type: "settlement", from, to, amountPaise, date, addedBy: me, ts: Date.now() };
   } else {
@@ -469,7 +520,8 @@ async function onSubmit(ev) {
 
     const pay = currentPayers(amountPaise);
     if (pay.bad) return showError(`That is not a number for ${pay.bad}.`);
-    const payerList = payerMode === "one" ? [$("paidBy").value] : selectedPayers();
+    if (pay.negative) return showError(`${pay.negative} cannot put in a negative amount.`);
+    const payerList = (payerMode === "one" ? [$("paidBy").value] : selectedPayers()).filter(Boolean);
     if (!payerList.length) return showError("Pick who paid.");
     const payersPaise = {};
     for (const n of payerList) if (pay.values[n] > 0) payersPaise[n] = pay.values[n];
@@ -483,6 +535,7 @@ async function onSubmit(ev) {
     const names = selectedParticipants();
     const inp = currentSplitInput();
     if (inp.bad) return showError(`That is not a number for ${inp.bad}.`);
+    if (inp.negative) return showError(`${inp.negative} cannot have a negative share.`);
     const result = computeShares(method, amountPaise, names, inp.values);
     if (result.error) return showError(result.error);
 
@@ -514,22 +567,24 @@ async function onSubmit(ev) {
   try {
     if (editingId) {
       const old = entries.find((e) => e.id === editingId);
+      if (!old) { showError("That entry has just been deleted by someone else."); resetForm(); return; }
+      const id = editingId;
       entry.addedBy = old.addedBy;
       entry.ts = old.ts;
       entry.editedBy = me;
       entry.editedTs = Date.now();
-      await store.update(editingId, entry);
-      openEntryId = editingId;
+      await saveSoon(() => store.update(id, entry));
+      openEntryId = id;
       resetForm();
       if (settleMode) setSettleMode(false);
     } else {
-      await store.add(entry);
+      await saveSoon(() => store.add(entry));
       const keepSettle = settleMode;
       resetForm();
       if (keepSettle) setSettleMode(false);
     }
   } catch (err) {
-    showError(`Could not save: ${err.message}`);
+    showError(friendlyError(err));
   } finally {
     btn.disabled = false;
     btn.textContent = editingId ? "Save changes" : label;
@@ -727,7 +782,12 @@ function entryDetail(e) {
     yes.type = "button";
     yes.className = "btn btn-danger btn-xs";
     yes.textContent = "Delete";
-    yes.onclick = async () => { pendingDelete = null; if (editingId === e.id) resetForm(); await store.remove(e.id); };
+    yes.onclick = async () => {
+      pendingDelete = null;
+      if (editingId === e.id) resetForm();
+      try { await saveSoon(() => store.remove(e.id)); }
+      catch (err) { showStatus(friendlyError(err), true); }
+    };
     const no = document.createElement("button");
     no.type = "button";
     no.className = "btn btn-ghost btn-xs";
@@ -955,9 +1015,10 @@ function renderRoster(L) {
       btn.textContent = "Remove";
       btn.onclick = async () => {
         showRosterError("");
+        if (PEOPLE.length <= 2) return showRosterError("A trip needs at least two people.");
         btn.disabled = true;
-        try { await store.saveRoster(PEOPLE.filter((n) => n !== p)); }
-        catch (err) { btn.disabled = false; showRosterError(`Could not save: ${err.message}`); }
+        try { await saveSoon(() => store.saveRoster(PEOPLE.filter((n) => n !== p))); }
+        catch (err) { btn.disabled = false; showRosterError(friendlyError(err)); }
       };
       note.textContent = "nothing logged yet";
       row.append(btn);
@@ -976,10 +1037,10 @@ async function onAddPerson(ev) {
   if (PEOPLE.some((p) => p.toLowerCase() === raw.toLowerCase())) return showRosterError(`${raw} is already on the trip.`);
   if (PEOPLE.length >= 50) return showRosterError("That is as many people as this register takes.");
   try {
-    await store.saveRoster([...PEOPLE, raw]);
+    await saveSoon(() => store.saveRoster([...PEOPLE, raw]));
     $("rosterName").value = "";
   } catch (err) {
-    showRosterError(`Could not save: ${err.message}`);
+    showRosterError(friendlyError(err));
   }
 }
 
@@ -1019,24 +1080,51 @@ function renderSettle(L) {
     amt.className = "settle-amt";
     amt.textContent = money(t.amount);
 
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-sm";
-    btn.textContent = "Mark paid";
-    btn.onclick = async () => {
-      btn.disabled = true;
-      btn.textContent = "Saving…";
+    const key = `${t.from}>${t.to}>${t.amount}`;
+    const record = async (button) => {
+      button.disabled = true;
+      button.textContent = "Saving…";
       try {
-        await store.add({
+        await saveSoon(() => store.add({
           type: "settlement", from: t.from, to: t.to, amountPaise: t.amount,
           date: new Date().toLocaleDateString("en-CA"), addedBy: me, ts: Date.now(),
-        });
+        }));
+        pendingSettle = null;
       } catch (err) {
-        btn.disabled = false;
-        btn.textContent = "Mark paid";
-        showStatus(`Could not save that payment: ${err.message}`, true);
+        button.disabled = false;
+        button.textContent = "Mark paid";
+        showStatus(friendlyError(err), true);
       }
     };
+
+    let btn;
+    if (pendingSettle === key) {
+      // Recording a payment that never happened is as damaging as missing one,
+      // and two people tapping the same row would settle the debt twice.
+      const wrap = document.createElement("div");
+      wrap.className = "confirm";
+      const q = document.createElement("span");
+      q.className = "confirm-q";
+      q.textContent = "Has the money actually moved?";
+      const yes = document.createElement("button");
+      yes.type = "button";
+      yes.className = "btn btn-sm btn-primary";
+      yes.textContent = "Yes, record it";
+      yes.onclick = () => record(yes);
+      const no = document.createElement("button");
+      no.type = "button";
+      no.className = "btn btn-ghost btn-sm";
+      no.textContent = "Not yet";
+      no.onclick = () => { pendingSettle = null; renderAll(); };
+      wrap.append(q, yes, no);
+      btn = wrap;
+    } else {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-sm";
+      btn.textContent = "Mark paid";
+      btn.onclick = () => { pendingSettle = key; renderAll(); };
+    }
 
     row.append(text, amt, btn);
     box.append(row);
@@ -1061,8 +1149,25 @@ function renderSummary(L) {
   $("tripSub").textContent = `${PEOPLE.length} people · ${count} expense${count === 1 ? "" : "s"}`;
 }
 
+/** The settle-up and filter pickers must also offer anyone who has left the
+ *  roster but still carries a balance, or their repayment could never be
+ *  recorded. The expense form deliberately does not: no new expenses for them. */
+function syncPeoplePickers(people) {
+  for (const [id, placeholder] of [["payFrom", null], ["payTo", null], ["filterPerson", "Everyone"]]) {
+    const el = $(id);
+    if (!el) continue;
+    const wanted = (placeholder ? [""] : []).concat(people).join("|");
+    const have = [...el.options].map((o) => o.value).join("|");
+    if (wanted === have) continue;
+    const keep = el.value;
+    fillSelect(el, people, placeholder);
+    el.value = people.includes(keep) || keep === "" ? keep : (people[0] || "");
+  }
+}
+
 function renderAll() {
   const L = buildLedger(entries, PEOPLE);
+  syncPeoplePickers(L.people);
   renderSummary(L);
   renderEntries();
   renderBalances(L);
@@ -1139,6 +1244,8 @@ function wireUi() {
   fillSelect($("filterPerson"), PEOPLE, "Everyone");
   $("payTo").value = PEOPLE[1];
   $("date").value = new Date().toLocaleDateString("en-CA");
+  $("date").min = MIN_DATE;
+  $("date").max = MAX_DATE;
 
   $("gateSelect").onchange = (e) => { $("gateGo").disabled = !e.target.value; };
   $("gateGo").onclick = () => {

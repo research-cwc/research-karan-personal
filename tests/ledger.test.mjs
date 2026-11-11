@@ -3,7 +3,7 @@
 
 import {
   DEFAULT_PEOPLE as PEOPLE, allocate, computeShares, buildLedger,
-  minTransfers, directTransfers, ledgerPeople, money,
+  minTransfers, directTransfers, ledgerPeople, money, parseRupees, parseNumber,
 } from "../ledger.js";
 
 let passed = 0;
@@ -303,6 +303,33 @@ const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
   const after = { ...L3.net };
   for (const t of minTransfers(L3.net)) { after[t.from] += t.amount; after[t.to] -= t.amount; }
   ok("transfers clear a changed roster", Object.values(after).every((v) => v === 0));
+}
+
+/* ── reading what people type ──────────────────────── */
+{
+  eq("plain rupees", parseRupees("100"), 100_00);
+  eq("rupees and paise", parseRupees("346.16"), 34616);
+  eq("a typed comma is ignored", parseRupees("1,234"), 1234_00);
+  eq("a rupee sign is ignored", parseRupees("₹450"), 450_00);
+  eq("surrounding space is ignored", parseRupees("  931  "), 931_00);
+  eq("a third decimal rounds", parseRupees("10.555"), 1056);
+  eq("floating point does not bite", parseRupees("0.07"), 7);
+  eq("a negative is read as negative, for the caller to reject", parseRupees("-50"), -50_00);
+  ok("empty is not a number", Number.isNaN(parseRupees("")));
+  ok("letters are not a number", Number.isNaN(parseRupees("abc")));
+  ok("two decimal points are not a number", Number.isNaN(parseRupees("1.2.3")));
+  ok("a lone minus is not a number", Number.isNaN(parseRupees("-")));
+  eq("percentages keep their decimals", parseNumber("33.33"), 33.33);
+  ok("blank percentage is not a number", Number.isNaN(parseNumber("")));
+
+  // The smallest possible expense still has to land somewhere.
+  const tiny = computeShares("equal", 1, PEOPLE, {});
+  eq("one paisa across thirteen still sums to one paisa", sum(tiny.shares), 1);
+  eq("and nobody gets a fraction", Object.values(tiny.shares).filter((v) => v > 0).length, 1);
+
+  // The ceiling the rules enforce must behave.
+  const big = computeShares("equal", 100000000, PEOPLE, {});
+  eq("the largest allowed expense splits exactly", sum(big.shares), 100000000);
 }
 
 /* ── formatting ────────────────────────────────────────────── */

@@ -162,6 +162,44 @@ is not on the trip.
 Already on: **Deploy from a branch**, `main`, `/ (root)`. Every push to `main`
 redeploys within a minute or two.
 
+## What was hardened before the trip
+
+A pass looking for the things that bite when real money is involved:
+
+- **A write made offline no longer hangs.** Firestore applies a write locally
+  at once but settles its promise only when the server acknowledges it, so on a
+  weak signal the button sat on "Saving…" for an entry that had in fact already
+  been recorded on that phone — and people would add it a second time. The app
+  now waits a few seconds, then says it will sync and carries on.
+- **Recording a payment asks first.** "Mark paid" moves real money in the
+  ledger, and two people tapping the same suggested transfer would settle a
+  debt twice. It now asks whether the money has actually moved.
+- **Settling with someone who left.** The settle-up and filter pickers are
+  built from the roster plus anyone still carrying a balance. Removing a person
+  is blocked once they have expenses, but two people acting at the same moment
+  could still slip past that; if it happens their repayment can still be
+  recorded.
+- **Negative amounts are refused** rather than being quietly dropped and
+  reported as a confusing mismatch. A negative is still allowed as a discount
+  under "equally, plus extras", where it means something.
+- **An upper limit is checked in the page**, with a sentence that explains it,
+  instead of letting the database refuse it with "permission denied".
+- **Dates are bounded** at the input, so a mistyped year cannot pin an entry to
+  the top of the register forever.
+- **Database errors are translated.** "Missing or insufficient permissions"
+  became a sentence about what to check.
+- **A trip cannot be emptied** below two people.
+- **Clicking a payer's name no longer double-fires**: those rows were `<label>`
+  elements wrapping a button, so a click toggled the payer and stole focus.
+
+### Known limits, deliberately left
+
+- **A deleted entry is gone.** Deletion is confirmed but not reversible and not
+  logged. Export the CSV before any clear-out.
+- **Names are an honour system.** Anyone can pick any name; there are no
+  logins. That was the point.
+- **Two people editing one entry**: the later save wins, silently.
+
 ## Deploys and stale caches
 
 `index.html` loads `styles.css`, `app.js` and `firebase-config.js` with a `?v=`
