@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
-} from "./ledger.js?v=4";
+} from "./ledger.js?v=5";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -194,13 +194,34 @@ function renderPayerRows() {
     input.inputMode = "decimal";
     input.placeholder = "0";
     input.dataset.name = p;
+    input.dataset.kind = "money";
     input.value = prev[p] || "";
     input.disabled = !payers.has(p);
     input.oninput = updatePreview;
     row.append(tick, input);
+    if (payers.has(p)) row.append(restButton(input));
     rows.append(row);
   }
   updatePreview();
+}
+
+/** Appears only while its row has focus: drops whatever is still unassigned
+ *  into this box, so the last payer never has to do the subtraction. */
+function restButton(input) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "rest-btn";
+  btn.tabIndex = -1;
+  btn.textContent = "rest";
+  btn.onmousedown = (ev) => ev.preventDefault();
+  btn.onclick = () => {
+    const left = Number(btn.dataset.left || 0);
+    const own = parseRupees(input.value) || 0;
+    input.value = ((own + left) / 100).toString();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  };
+  return btn;
 }
 
 function renderSplitRows() {
@@ -215,6 +236,7 @@ function renderSplitRows() {
     const rows = $("splitRows");
     const prev = Object.fromEntries([...rows.querySelectorAll("input")].map((i) => [i.dataset.name, i.value]));
     rows.innerHTML = "";
+    const isMoney = method === "exact" || method === "adjust";
     for (const p of selectedParticipants()) {
       const row = document.createElement("label");
       row.className = "amount-row is-on";
@@ -231,29 +253,54 @@ function renderSplitRows() {
       input.inputMode = "decimal";
       input.placeholder = "0";
       input.dataset.name = p;
-      input.dataset.kind = method === "exact" || method === "adjust" ? "money" : "number";
+      input.dataset.kind = isMoney ? "money" : "number";
       input.value = prev[p] || "";
       input.oninput = updatePreview;
       wrap.append(unit, input);
       row.append(tag, wrap);
+      if (method === "exact" || method === "percent") row.append(restButton(input));
       rows.append(row);
     }
   }
   updatePreview();
 }
 
+/** Says what is still missing rather than what has been entered, because the
+ *  number you need next is the difference, not the running total. */
+function remainderLine(sum, total, fmt) {
+  if (total <= 0) return { text: "Enter the amount first", cls: "" };
+  if (sum === total) return { text: `All ${fmt(total)} accounted for`, cls: "is-ok" };
+  if (sum < total) return { text: `${fmt(total - sum)} left to put in`, cls: "is-wait" };
+  return { text: `${fmt(sum - total)} too much`, cls: "is-off" };
+}
+
+function applyRemainder(rows, left, fmt) {
+  for (const input of rows.querySelectorAll("input")) {
+    const empty = !input.value.trim() || Number(input.value) === 0;
+    input.placeholder = !input.disabled && empty && left > 0 ? fmt(left) : "0";
+  }
+  for (const btn of rows.querySelectorAll(".rest-btn")) {
+    btn.dataset.left = String(left);
+    btn.hidden = left <= 0;
+    btn.textContent = `+${fmt(left)}`;
+  }
+}
+
 function updatePreview() {
   if (settleMode) { $("preview").hidden = true; return; }
   const total = parseRupees($("amount").value) || 0;
   const names = selectedParticipants();
+  const asMoney = (v) => money(v);
+  const asPlain = (v) => String(Math.round(v * 100) / 100);
 
-  // payers running total
   if (payerMode === "many") {
     const { values } = currentPayers(total);
     const sum = selectedPayers().reduce((a, n) => a + (values[n] || 0), 0);
+    const line = remainderLine(sum, total, asMoney);
     const el = $("payersSum");
-    el.textContent = `${money(sum)} of ${money(total)}`;
-    el.className = "sub-sum " + (total > 0 && sum === total ? "is-ok" : "is-off");
+    el.textContent = line.text;
+    el.className = "sub-sum " + line.cls;
+    applyRemainder($("payersRows"), total - sum, (v) => asMoney(v).replace("₹", ""));
   }
 
   const method = $("splitMode").value;
@@ -262,31 +309,32 @@ function updatePreview() {
 
   if (method !== "equal") {
     const el = $("splitSum");
-    if (method === "percent") {
-      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
-      el.textContent = `${Math.round(sum * 100) / 100}% of 100%`;
-      el.className = "sub-sum " + (Math.abs(sum - 100) < 0.001 ? "is-ok" : "is-off");
-    } else if (method === "exact") {
-      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
-      el.textContent = `${money(sum)} of ${money(total)}`;
-      el.className = "sub-sum " + (total > 0 && sum === total ? "is-ok" : "is-off");
+    const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
+    if (method === "exact") {
+      const line = remainderLine(sum, total, asMoney);
+      el.textContent = line.text;
+      el.className = "sub-sum " + line.cls;
+      applyRemainder($("splitRows"), total - sum, (v) => asMoney(v).replace("₹", ""));
+    } else if (method === "percent") {
+      const line = remainderLine(Math.round(sum * 100), 10000, (v) => `${Math.round(v) / 100}%`);
+      el.textContent = line.text;
+      el.className = "sub-sum " + line.cls;
+      applyRemainder($("splitRows"), Math.round((100 - sum) * 100) / 100, asPlain);
     } else if (method === "shares") {
-      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
-      el.textContent = `${sum} share${sum === 1 ? "" : "s"}`;
-      el.className = "sub-sum " + (sum > 0 ? "is-ok" : "is-off");
+      el.textContent = sum > 0 ? `${sum} share${sum === 1 ? "" : "s"} between ${names.length}` : "Give someone at least one share";
+      el.className = "sub-sum " + (sum > 0 ? "is-ok" : "is-wait");
     } else {
-      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
-      el.textContent = `${money(sum)} in extras`;
-      el.className = "sub-sum " + (sum <= total ? "is-ok" : "is-off");
+      const base = total - sum;
+      el.textContent = total <= 0 ? "Enter the amount first"
+        : base < 0 ? `${asMoney(-base)} more than the expense`
+        : `${asMoney(base)} split equally on top`;
+      el.className = "sub-sum " + (total > 0 && base >= 0 ? "is-ok" : "is-off");
     }
   }
 
   const box = $("preview");
   const rows = $("previewRows");
-  if (!total || !names.length || result.error || !result.shares) {
-    box.hidden = true;
-    return;
-  }
+  if (!total || !names.length || result.error || !result.shares) { box.hidden = true; return; }
   box.hidden = false;
   rows.innerHTML = "";
   for (const n of names) {
