@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Goa Register</title>
+<meta name="description" content="Shared expense register for the Goa trip.">
+<meta name="theme-color" content="#0C1620">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231B5FA8'/%3E%3Ctext x='16' y='23' font-family='sans-serif' font-size='18' font-weight='bold' fill='white' text-anchor='middle'%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ───────────────────────── Name gate ───────────────────────── -->
+<div id="gate" class="gate" hidden>
+  <div class="gate-card">
+    <p class="gate-eyebrow">Goa trip register</p>
+    <h1 class="gate-title">Who are you?</h1>
+    <p class="gate-sub">Pick your name so every expense you add is tagged to you. You can switch later from the header.</p>
+    <label class="field">
+      <span class="field-label">Your name</span>
+      <select id="gateSelect" class="select select-lg">
+        <option value="">Select your name…</option>
+      </select>
+    </label>
+    <button id="gateGo" class="btn btn-primary btn-lg" disabled>Open the register</button>
+    <p class="gate-foot">13 people on this trip. Everyone sees the same register, updated live.</p>
+  </div>
+</div>
+
+<!-- ───────────────────────── App ───────────────────────── -->
+<div id="app" class="app" hidden>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1 class="brand-title">Goa Register</h1>
+          <p class="brand-sub" id="tripSub">Loading…</p>
+        </div>
+      </div>
+      <label class="who">
+        <span class="who-label">You</span>
+        <select id="whoSelect" class="select select-sm"></select>
+      </label>
+    </div>
+
+    <div class="summary">
+      <div class="summary-cell">
+        <span class="summary-label">Trip total</span>
+        <span class="summary-value" id="sumTotal">₹0</span>
+      </div>
+      <div class="summary-cell">
+        <span class="summary-label">Your spend share</span>
+        <span class="summary-value" id="sumYourShare">₹0</span>
+      </div>
+      <div class="summary-cell">
+        <span class="summary-label" id="sumNetLabel">Your balance</span>
+        <span class="summary-value" id="sumNet">₹0</span>
+      </div>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="expenses" role="tab" aria-selected="true">Expenses</button>
+      <button class="tab" data-tab="balances" role="tab" aria-selected="false">Balances</button>
+      <button class="tab" data-tab="settle" role="tab" aria-selected="false">Settle up</button>
+    </nav>
+  </header>
+
+  <div id="statusBar" class="statusbar" hidden></div>
+
+  <main class="main">
+
+    <!-- ── Expenses ── -->
+    <section id="view-expenses" class="view">
+
+      <form id="expenseForm" class="card form" autocomplete="off">
+        <div class="form-head">
+          <h2 class="card-title">Add an expense</h2>
+          <button type="button" id="settleToggle" class="btn btn-ghost btn-sm">Record a payment instead</button>
+        </div>
+
+        <div class="row row-amount">
+          <label class="field field-amount">
+            <span class="field-label">Amount</span>
+            <div class="amount-wrap">
+              <span class="amount-prefix">₹</span>
+              <input id="amount" class="input input-amount" type="text" inputmode="decimal" placeholder="0" required>
+            </div>
+          </label>
+          <label class="field field-desc">
+            <span class="field-label">What for</span>
+            <input id="desc" class="input" type="text" placeholder="Dinner at Thalassa" maxlength="80" required>
+          </label>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Category</span>
+          <div id="catRow" class="chips chips-cat"></div>
+        </div>
+
+        <div class="row">
+          <label class="field">
+            <span class="field-label">Paid by</span>
+            <select id="paidBy" class="select"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Split</span>
+            <select id="splitMode" class="select">
+              <option value="equal">Equally</option>
+              <option value="exact">By exact amounts</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="field">
+          <div class="field-label-row">
+            <span class="field-label">Split between <span id="partCount" class="count">13</span></span>
+            <div class="field-actions">
+              <button type="button" class="btn btn-ghost btn-xs" data-select="all">Everyone</button>
+              <button type="button" class="btn btn-ghost btn-xs" data-select="none">Clear</button>
+              <button type="button" class="btn btn-ghost btn-xs" data-select="me">Just me</button>
+            </div>
+          </div>
+          <div id="partRow" class="chips"></div>
+        </div>
+
+        <div id="exactBox" class="exact" hidden>
+          <div class="exact-head">
+            <span class="field-label">Exact share per person</span>
+            <span id="exactSum" class="exact-sum">₹0 of ₹0</span>
+          </div>
+          <div id="exactRows" class="exact-rows"></div>
+        </div>
+
+        <!-- Payment (settlement) fields -->
+        <div id="settleBox" class="row" hidden>
+          <label class="field">
+            <span class="field-label">Who paid</span>
+            <select id="payFrom" class="select"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Paid to</span>
+            <select id="payTo" class="select"></select>
+          </label>
+        </div>
+
+        <p id="formError" class="form-error" hidden></p>
+
+        <button type="submit" id="submitBtn" class="btn btn-primary btn-block">Add expense</button>
+      </form>
+
+      <div class="list-head">
+        <h2 class="list-title">Register</h2>
+        <div class="list-tools">
+          <select id="filterPerson" class="select select-sm">
+            <option value="">Everyone</option>
+          </select>
+          <button type="button" id="exportBtn" class="btn btn-ghost btn-sm">Export CSV</button>
+        </div>
+      </div>
+
+      <div id="entryList" class="entries"></div>
+      <div id="emptyState" class="empty" hidden>
+        <p class="empty-title">Nothing logged yet</p>
+        <p class="empty-sub">Add the first expense above — the airport cab, the first round, whatever started it.</p>
+      </div>
+    </section>
+
+    <!-- ── Balances ── -->
+    <section id="view-balances" class="view" hidden>
+      <div class="card">
+        <h2 class="card-title">Where everyone stands</h2>
+        <p class="card-sub">Positive means the trip owes them. Negative means they owe the trip.</p>
+        <div id="balanceList" class="balances"></div>
+      </div>
+      <div class="card">
+        <h2 class="card-title">Spend by category</h2>
+        <div id="catBreakdown" class="breakdown"></div>
+      </div>
+    </section>
+
+    <!-- ── Settle up ── -->
+    <section id="view-settle" class="view" hidden>
+      <div class="card">
+        <h2 class="card-title">Fewest payments to clear everything</h2>
+        <p class="card-sub">Make these transfers and every balance lands at zero. Tap <strong>Mark paid</strong> once the money has actually moved.</p>
+        <div id="settleList" class="settlements"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <span id="syncNote">Local mode</span>
+  </footer>
+</div>
+
+<script src="firebase-config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
