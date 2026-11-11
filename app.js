@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
-} from "./ledger.js";
+} from "./ledger.js?v=4";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -39,6 +39,11 @@ let pendingDelete = null;
 let settleView = "simple";
 
 const $ = (id) => document.getElementById(id);
+
+/* A viewer can be holding a cached index.html while running a newer app.js, so
+   an element this code knows about may not be on their page yet. Wiring through
+   these means the page loses that one feature instead of failing to start. */
+const on = (id, event, fn) => { const el = $(id); if (el) el.addEventListener(event, fn); };
 
 /* ── Storage ───────────────────────────────────────────────── */
 function localStore() {
@@ -201,10 +206,10 @@ function renderPayerRows() {
 function renderSplitRows() {
   const method = $("splitMode").value;
   const box = $("splitBox");
-  const on = method !== "equal" && !settleMode;
-  box.hidden = !on;
+  const needsInputs = method !== "equal" && !settleMode;
+  box.hidden = !needsInputs;
 
-  if (on) {
+  if (needsInputs) {
     const meta = SPLIT_HINTS[method];
     $("splitHint").textContent = meta.hint;
     const rows = $("splitRows");
@@ -777,6 +782,7 @@ function renderBalances(L) {
   }
 
   const sum = L.people.reduce((a, p) => a + L.net[p], 0);
+  if (!$("balanceCheck")) return;
   $("balanceCheck").textContent = sum === 0
     ? `All ${L.people.length} balances add up to exactly ₹0 — the books are consistent.`
     : `Balances are off by ${money(sum)} — please tell Karan.`;
@@ -856,6 +862,7 @@ function applyRoster(names) {
 
 function showRosterError(msg) {
   const el = $("rosterError");
+  if (!el) return;
   el.hidden = !msg;
   el.textContent = msg || "";
 }
@@ -914,6 +921,7 @@ function renderRoster(L) {
 async function onAddPerson(ev) {
   ev.preventDefault();
   showRosterError("");
+  if (!$("rosterName")) return;
   const raw = $("rosterName").value.trim().replace(/\s+/g, " ");
   if (!raw) return showRosterError("Type a name first.");
   if (raw.length > 24) return showRosterError("That name is too long.");
@@ -1097,9 +1105,9 @@ function wireUi() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.onclick = () => {
       for (const t of document.querySelectorAll(".tab")) {
-        const on = t === tab;
-        t.classList.toggle("is-active", on);
-        t.setAttribute("aria-selected", String(on));
+        const active = t === tab;
+        t.classList.toggle("is-active", active);
+        t.setAttribute("aria-selected", String(active));
       }
       for (const v of ["expenses", "balances", "settle"]) $(`view-${v}`).hidden = v !== tab.dataset.tab;
     };
@@ -1133,7 +1141,7 @@ function wireUi() {
   $("expenseForm").addEventListener("submit", onSubmit);
   $("filterPerson").onchange = renderEntries;
   $("exportBtn").onclick = exportCsv;
-  $("rosterForm").addEventListener("submit", onAddPerson);
+  on("rosterForm", "submit", onAddPerson);
 }
 
 async function start() {

@@ -162,6 +162,19 @@ is not on the trip.
 Already on: **Deploy from a branch**, `main`, `/ (root)`. Every push to `main`
 redeploys within a minute or two.
 
+## Deploys and stale caches
+
+`index.html` loads `styles.css`, `app.js` and `firebase-config.js` with a `?v=`
+query, and `app.js` imports `ledger.js` the same way. Bump that number when
+shipping a change, or a phone holding yesterday's cached script will keep
+running it.
+
+That is belt and braces, not the only guard. A viewer can still be holding an
+older `index.html` than the script it loads, so code that wires up a control
+goes through a helper that quietly skips anything not on the page. A page one
+version behind loses that one feature; it does not fail to start. This is
+tested by serving a stripped page against the current script.
+
 ## Files
 
 | File | What it is |
