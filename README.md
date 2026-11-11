@@ -11,13 +11,10 @@ account anywhere.
 
 ### 1. Firebase (once, ~5 minutes)
 
-1. [console.firebase.google.com](https://console.firebase.google.com) → **Add project**.
-   Any name. Google Analytics can be off.
-2. **Build → Firestore Database → Create database**. Pick a region near India
-   (`asia-south1`). Start in **test mode** — the rules below replace it.
-3. **Project settings** (gear icon) → **Your apps** → web icon `</>` →
-   register an app. Copy the `firebaseConfig` object it shows.
-4. Paste it into [`firebase-config.js`](firebase-config.js), inside `firebase: { … }`.
+Already done. The project is `goa-register`, Firestore lives in `asia-south1`
+(Mumbai), and the keys are in [`firebase-config.js`](firebase-config.js). To
+point this at a different project, replace that file's `firebase` object with
+the one from **Project settings → Your apps → Web**.
 
 ### 2. Firestore rules
 
@@ -28,22 +25,26 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /trips/{tripId}/entries/{entryId} {
-      allow read, write: if tripId == 'goa-2026';
+      allow read, write: if tripId == 'goa-2026-x7k2';
     }
   }
 }
 ```
 
-Test mode expires after 30 days and the register stops working; these rules do
-not expire. They allow anyone who has the page to read and write that one trip's
-entries, which is the point — there are no logins. Change `goa-2026` in both the
-rules and `firebase-config.js` to something less guessable if that matters.
+The database was created in production mode, so nothing could be read or
+written until these rules went live — there was never an open window, and
+unlike test mode they do not expire after 30 days.
+
+They allow anyone holding the page to read and write that one trip's entries,
+which is the point — there are no logins. The trip id is the only thing gating
+it, so treat it like the link itself. Changing it means changing both the rules
+and `firebase-config.js`; the register goes blank if they disagree.
 
 ### 3. GitHub Pages
 
-Repo **Settings → Pages → Build and deployment**, source **Deploy from a
-branch**, branch `main`, folder `/ (root)`. Save. The URL appears there in a
-minute or two. Share that link.
+Already on: **Deploy from a branch**, `main`, `/ (root)`. Live at
+<https://research-cwc.github.io/research-karan-personal/>. Every push to `main`
+redeploys it within a minute or two.
 
 ## How it works
 
