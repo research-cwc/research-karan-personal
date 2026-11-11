@@ -105,8 +105,24 @@ button, input, select { font: inherit; color: inherit; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 28px 24px;
+  overflow: hidden;
+}
+.gate-photo {
+  margin: 0;
+  height: 190px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.gate-photo img {
+  display: block; width: 100%; height: 100%;
+  object-fit: cover; object-position: 50% 57%;
+}
+.gate-body {
+  padding: 22px 24px 26px;
   display: flex; flex-direction: column; gap: 14px;
+}
+@media (max-height: 680px) {
+  .gate-photo { height: 130px; }
 }
 .gate-eyebrow {
   font-size: 11px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase;
