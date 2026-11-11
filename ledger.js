@@ -176,6 +176,7 @@ function expenseDebts(paidMap, shareMap) {
 function peopleInEntries(list) {
   const seen = new Set();
   for (const e of list || []) {
+    if (e.deleted) continue;
     if (e.type === "settlement") { seen.add(e.from); seen.add(e.to); continue; }
     for (const n of Object.keys(e.payersPaise || {})) seen.add(n);
     for (const n of Object.keys(e.sharesPaise || {})) seen.add(n);
@@ -201,6 +202,9 @@ function buildLedger(list, roster) {
   const debt = Object.fromEntries(PEOPLE.map((p) => [p, zero()])); // debt[a][b]: a owes b
 
   for (const e of list) {
+    // A deleted entry is kept so it can be restored, but it must not touch a
+    // single balance while it is in the bin.
+    if (e.deleted) continue;
     if (e.type === "settlement") {
       if (!(e.from in paid) || !(e.to in paid)) continue;
       settledOut[e.from] += e.amountPaise;

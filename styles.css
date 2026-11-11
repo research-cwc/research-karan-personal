@@ -565,3 +565,36 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ── Undo and the bin ──────────────────────────────────────── */
+.undobar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap;
+  background: var(--accent-wash); border: 1px solid var(--accent);
+  border-radius: var(--r-md); padding: 11px 14px;
+}
+.undobar-text { font-size: 13.5px; font-weight: 600; color: var(--accent); }
+
+.bin { padding: 0; gap: 0; }
+.bin-summary {
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 20px; font-weight: 650; font-size: 14.5px;
+}
+.bin-summary::-webkit-details-marker { display: none; }
+.bin-summary::before {
+  content: "›"; display: inline-block; font-size: 18px; line-height: 1;
+  color: var(--ink-soft); transition: transform .12s ease;
+}
+.bin[open] .bin-summary::before { transform: rotate(90deg); }
+.bin-title { color: var(--ink-mid); }
+.bin-count { font-size: 12.5px; color: var(--ink-soft); font-weight: 500; }
+.bin-note { margin: 0; padding: 0 20px 12px; }
+.bin-list { display: flex; flex-direction: column; padding: 0 20px 18px; }
+.bin-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; padding: 11px 0; border-top: 1px solid var(--line-soft);
+}
+.bin-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.bin-desc { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bin-meta { font-size: 12px; color: var(--ink-soft); }

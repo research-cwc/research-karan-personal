@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
-} from "./ledger.js?v=6";
+} from "./ledger.js?v=7";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -37,6 +37,8 @@ let openEntryId = null;
 let openPerson = null;
 let pendingDelete = null;
 let pendingSettle = null;
+let pendingPurge = null;
+let lastDeleted = null;
 let settleView = "simple";
 
 const MAX_PAISE = 100000000;          // Rs 10,00,000 — matches the security rules
@@ -591,9 +593,122 @@ async function onSubmit(ev) {
   }
 }
 
+/* ── Deleting, and taking it back ─────────────────── */
+/** Deletion marks the entry rather than destroying it. It drops out of the
+ *  register and out of every balance at once, but any of the thirteen can put
+ *  it back, and it survives a reload — an undo that only worked for whoever
+ *  pressed the button, until they closed the tab, would not be worth much
+ *  against a mis-tapped hotel bill. */
+function strip(entry) {
+  const { id, deleted, deletedBy, deletedTs, ...rest } = entry;
+  return rest;
+}
+
+async function softDelete(e) {
+  const label = e.type === "settlement" ? `${e.from} → ${e.to}` : e.desc;
+  const body = { ...strip(e), deleted: true, deletedBy: me, deletedTs: Date.now() };
+  try {
+    await saveSoon(() => store.update(e.id, body));
+    lastDeleted = { id: e.id, label };
+  } catch (err) {
+    // Until the security rules learn about the deleted fields, a marked entry
+    // is refused. Falling back keeps deletion working, but it is permanent, so
+    // say so plainly rather than offering an undo that cannot deliver.
+    if (!String(err && err.code).includes("permission-denied")) throw err;
+    await saveSoon(() => store.remove(e.id));
+    lastDeleted = null;
+    showStatus(`"${label}" was deleted for good — this register's rules have not been updated for undo yet.`, true);
+  }
+  renderUndoBar();
+}
+
+async function restore(id) {
+  const e = entries.find((x) => x.id === id);
+  if (!e) { showStatus("That entry is no longer here.", true); return; }
+  await saveSoon(() => store.update(id, strip(e)));
+  if (lastDeleted && lastDeleted.id === id) lastDeleted = null;
+  renderUndoBar();
+}
+
+function renderUndoBar() {
+  const bar = $("undoBar");
+  if (!bar) return;
+  const live = lastDeleted && entries.some((e) => e.id === lastDeleted.id && e.deleted);
+  bar.hidden = !live;
+  if (live) $("undoText").textContent = `Deleted "${lastDeleted.label}".`;
+}
+
+function renderBin() {
+  const card = $("binCard");
+  if (!card) return;
+  const gone = entries.filter((e) => e.deleted).sort((a, b) => (b.deletedTs || 0) - (a.deletedTs || 0));
+  card.hidden = !gone.length;
+  $("binCount").textContent = gone.length ? `${gone.length} entr${gone.length === 1 ? "y" : "ies"}` : "";
+  const list = $("binList");
+  list.innerHTML = "";
+
+  for (const e of gone) {
+    const row = document.createElement("div");
+    row.className = "bin-row";
+
+    const body = document.createElement("div");
+    body.className = "bin-body";
+    const title = document.createElement("p");
+    title.className = "bin-desc";
+    title.textContent = e.type === "settlement" ? `${e.from} → ${e.to}` : e.desc;
+    const meta = document.createElement("p");
+    meta.className = "bin-meta";
+    const when = e.deletedTs ? new Date(e.deletedTs).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
+    meta.textContent = `${money(e.amountPaise)} · ${e.date}${e.deletedBy ? ` · deleted by ${e.deletedBy}${when ? ` on ${when}` : ""}` : ""}`;
+    body.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "confirm";
+    if (pendingPurge === e.id) {
+      const q = document.createElement("span");
+      q.className = "confirm-q";
+      q.textContent = "Gone for good?";
+      const yes = document.createElement("button");
+      yes.type = "button";
+      yes.className = "btn btn-danger btn-xs";
+      yes.textContent = "Erase";
+      yes.onclick = async () => {
+        pendingPurge = null;
+        try { await saveSoon(() => store.remove(e.id)); }
+        catch (err) { showStatus(friendlyError(err), true); }
+      };
+      const no = document.createElement("button");
+      no.type = "button";
+      no.className = "btn btn-ghost btn-xs";
+      no.textContent = "Keep";
+      no.onclick = () => { pendingPurge = null; renderAll(); };
+      actions.append(q, yes, no);
+    } else {
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "btn btn-sm";
+      back.textContent = "Restore";
+      back.onclick = async () => {
+        back.disabled = true;
+        try { await restore(e.id); }
+        catch (err) { back.disabled = false; showStatus(friendlyError(err), true); }
+      };
+      const purge = document.createElement("button");
+      purge.type = "button";
+      purge.className = "btn btn-ghost btn-xs";
+      purge.textContent = "Erase";
+      purge.onclick = () => { pendingPurge = e.id; renderAll(); };
+      actions.append(back, purge);
+    }
+
+    row.append(body, actions);
+    list.append(row);
+  }
+}
+
 /* ── Entry list ────────────────────────────────────────────── */
 function sortedEntries() {
-  return entries.slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts));
+  return entries.filter((e) => !e.deleted).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts));
 }
 
 function dayLabel(dateStr) {
@@ -785,7 +900,7 @@ function entryDetail(e) {
     yes.onclick = async () => {
       pendingDelete = null;
       if (editingId === e.id) resetForm();
-      try { await saveSoon(() => store.remove(e.id)); }
+      try { await softDelete(e); }
       catch (err) { showStatus(friendlyError(err), true); }
     };
     const no = document.createElement("button");
@@ -1173,6 +1288,8 @@ function renderAll() {
   renderBalances(L);
   renderSettle(L);
   renderRoster(L);
+  renderBin();
+  renderUndoBar();
 }
 
 function showError(msg) {
@@ -1297,6 +1414,13 @@ function wireUi() {
   $("filterPerson").onchange = renderEntries;
   $("exportBtn").onclick = exportCsv;
   on("rosterForm", "submit", onAddPerson);
+  on("undoBtn", "click", async () => {
+    if (!lastDeleted) return;
+    const id = lastDeleted.id;
+    $("undoBtn").disabled = true;
+    try { await restore(id); } catch (err) { showStatus(friendlyError(err), true); }
+    $("undoBtn").disabled = false;
+  });
 }
 
 async function start() {

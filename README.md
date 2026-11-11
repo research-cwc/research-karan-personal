@@ -122,9 +122,9 @@ allow write: if tripId == 'goa-2026-x7k2' && request.resource.data.keys().hasOnl
 match /trips/{tripId}/entries/{entryId} {
 function roster() { return get(/databases/$(database)/documents/trips/$(tripId)/meta/roster).data.names; }
 function people() { return exists(/databases/$(database)/documents/trips/$(tripId)/meta/roster) ? roster() : ['Karan','Vidhi','Vatsal','Dhwani','Diksha','Rohan','Sakshi','Jeet','Dhruvina','Yash','Minal','Vinay','Varun']; }
-function base(d) { return d.ts is int && d.addedBy in people() && d.amountPaise is int && d.amountPaise > 0 && d.amountPaise <= 100000000 && d.date is string && d.date.size() == 10 && (!d.keys().hasAny(['note']) || (d.note is string && d.note.size() <= 200)) && (!d.keys().hasAny(['editedBy']) || d.editedBy in people()); }
-function expense(d) { return d.type == 'expense' && d.keys().hasAll(['type','desc','category','amountPaise','date','payersPaise','sharesPaise','splitMethod','addedBy','ts']) && d.keys().hasOnly(['type','desc','category','amountPaise','date','payersPaise','sharesPaise','splitMethod','splitInput','note','addedBy','ts','editedBy','editedTs']) && d.desc is string && d.desc.size() > 0 && d.desc.size() <= 80 && d.category is string && d.category.size() <= 20 && d.splitMethod in ['equal','exact','percent','shares','adjust'] && d.payersPaise is map && d.payersPaise.size() > 0 && d.payersPaise.keys().hasOnly(people()) && d.sharesPaise is map && d.sharesPaise.size() > 0 && d.sharesPaise.keys().hasOnly(people()); }
-function payment(d) { return d.type == 'settlement' && d.keys().hasAll(['type','from','to','amountPaise','date','addedBy','ts']) && d.keys().hasOnly(['type','from','to','amountPaise','date','note','addedBy','ts','editedBy','editedTs']) && d.from in people() && d.to in people() && d.from != d.to; }
+function base(d) { return d.ts is int && d.addedBy in people() && d.amountPaise is int && d.amountPaise > 0 && d.amountPaise <= 100000000 && d.date is string && d.date.size() == 10 && (!d.keys().hasAny(['note']) || (d.note is string && d.note.size() <= 200)) && (!d.keys().hasAny(['editedBy']) || d.editedBy in people()) && (!d.keys().hasAny(['deleted']) || d.deleted is bool) && (!d.keys().hasAny(['deletedBy']) || d.deletedBy in people()); }
+function expense(d) { return d.type == 'expense' && d.keys().hasAll(['type','desc','category','amountPaise','date','payersPaise','sharesPaise','splitMethod','addedBy','ts']) && d.keys().hasOnly(['type','desc','category','amountPaise','date','payersPaise','sharesPaise','splitMethod','splitInput','note','addedBy','ts','editedBy','editedTs','deleted','deletedBy','deletedTs']) && d.desc is string && d.desc.size() > 0 && d.desc.size() <= 80 && d.category is string && d.category.size() <= 20 && d.splitMethod in ['equal','exact','percent','shares','adjust'] && d.payersPaise is map && d.payersPaise.size() > 0 && d.payersPaise.keys().hasOnly(people()) && d.sharesPaise is map && d.sharesPaise.size() > 0 && d.sharesPaise.keys().hasOnly(people()); }
+function payment(d) { return d.type == 'settlement' && d.keys().hasAll(['type','from','to','amountPaise','date','addedBy','ts']) && d.keys().hasOnly(['type','from','to','amountPaise','date','note','addedBy','ts','editedBy','editedTs','deleted','deletedBy','deletedTs']) && d.from in people() && d.to in people() && d.from != d.to; }
 function valid(d) { return base(d) && (expense(d) || payment(d)); }
 allow read: if tripId == 'goa-2026-x7k2';
 allow create: if tripId == 'goa-2026-x7k2' && valid(request.resource.data);
@@ -192,10 +192,19 @@ A pass looking for the things that bite when real money is involved:
 - **Clicking a payer's name no longer double-fires**: those rows were `<label>`
   elements wrapping a button, so a click toggled the payer and stole focus.
 
-### Known limits, deliberately left
+### Deleting is reversible
 
-- **A deleted entry is gone.** Deletion is confirmed but not reversible and not
-  logged. Export the CSV before any clear-out.
+Deleting marks an entry rather than destroying it. It leaves the register and
+every balance at once, an Undo appears straight away, and it also drops into a
+**Deleted** section at the foot of the Expenses tab that any of the thirteen
+can restore from. It survives a reload, so an undo is still there tomorrow.
+Erasing one for good is a second, separate confirmation.
+
+This needs the `deleted`, `deletedBy` and `deletedTs` fields allowed by the
+rules below. Until they are, the app falls back to deleting outright and says
+so in as many words, rather than offering an undo it cannot honour.
+
+### Known limits, deliberately left
 - **Names are an honour system.** Anyone can pick any name; there are no
   logins. That was the point.
 - **Two people editing one entry**: the later save wins, silently.

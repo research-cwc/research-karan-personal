@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=7">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231B5FA8'/%3E%3Ctext x='16' y='23' font-family='sans-serif' font-size='18' font-weight='bold' fill='white' text-anchor='middle'%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -199,6 +199,11 @@
         <button type="submit" id="submitBtn" class="btn btn-primary btn-block">Add expense</button>
       </form>
 
+      <div id="undoBar" class="undobar" hidden>
+        <span id="undoText" class="undobar-text"></span>
+        <button type="button" id="undoBtn" class="btn btn-sm">Undo</button>
+      </div>
+
       <div class="list-head">
         <h2 class="list-title">Register</h2>
         <div class="list-tools">
@@ -214,6 +219,15 @@
         <p class="empty-title">Nothing logged yet</p>
         <p class="empty-sub">Add the first expense above — the airport cab, the first round, whatever started it.</p>
       </div>
+
+      <details id="binCard" class="card bin" hidden>
+        <summary class="bin-summary">
+          <span class="bin-title">Deleted</span>
+          <span id="binCount" class="bin-count"></span>
+        </summary>
+        <p class="card-sub bin-note">Deleted entries count for nothing until they are put back. Anyone can restore one.</p>
+        <div id="binList" class="bin-list"></div>
+      </details>
     </section>
 
     <!-- ── Balances ── -->
@@ -263,7 +277,7 @@
   </footer>
 </div>
 
-<script src="firebase-config.js?v=6"></script>
-<script type="module" src="app.js?v=6"></script>
+<script src="firebase-config.js?v=7"></script>
+<script type="module" src="app.js?v=7"></script>
 </body>
 </html>

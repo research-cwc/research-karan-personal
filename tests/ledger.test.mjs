@@ -17,6 +17,7 @@ function ok(name, cond, detail = "") {
 }
 const eq = (name, got, want) => ok(name, got === want, `got ${got}, wanted ${want}`);
 const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
+const strip = ({ deleted, deletedBy, deletedTs, ...rest }) => rest;
 
 /* ── allocate ──────────────────────────────────────────────── */
 {
@@ -303,6 +304,41 @@ const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
   const after = { ...L3.net };
   for (const t of minTransfers(L3.net)) { after[t.from] += t.amount; after[t.to] -= t.amount; }
   ok("transfers clear a changed roster", Object.values(after).every((v) => v === 0));
+}
+
+/* ── deleted entries ─────────────────────────── */
+{
+  const live = {
+    type: "expense", amountPaise: 300_00, date: "2026-11-11", ts: 1,
+    payersPaise: { Karan: 300_00 },
+    sharesPaise: { Karan: 100_00, Vidhi: 100_00, Vatsal: 100_00 },
+    splitMethod: "equal", addedBy: "Karan",
+  };
+  // Rohan paid for a villa the others share: deleting it must move real money.
+  const binned = {
+    type: "expense", amountPaise: 9000_00, date: "2026-11-11", ts: 2,
+    payersPaise: { Rohan: 9000_00 },
+    sharesPaise: { Rohan: 3000_00, Karan: 3000_00, Vidhi: 3000_00 },
+    splitMethod: "equal", addedBy: "Rohan",
+    deleted: true, deletedBy: "Rohan", deletedTs: 3,
+  };
+
+  const L = buildLedger([live, binned]);
+  eq("a deleted expense changes nobody's balance", L.net.Rohan, 0);
+  eq("and leaves the live one untouched", L.net.Karan, 200_00);
+  eq("and the books still balance", sum(L.net), 0);
+  ok("a deleted entry adds nobody to the ledger", !PEOPLE.includes("Ghost"));
+
+  const ghost = { type: "settlement", from: "Ghost", to: "Karan", amountPaise: 100, date: "2026-11-11", ts: 4, addedBy: "Karan", deleted: true };
+  const L2 = buildLedger([live, ghost]);
+  ok("a deleted entry cannot drag a stranger into the ledger", L2.net.Ghost === undefined);
+
+  // Restoring is the same entry without the flag, and the money comes back.
+  const L3 = buildLedger([live, strip(binned)]);
+  eq("restoring puts the payer back in credit", L3.net.Rohan, 6000_00);
+  eq("and puts the others back in debt", L3.net.Vidhi, -100_00 - 3000_00);
+  eq("and the books still balance", sum(L3.net), 0);
+  ok("the deleted version moved nothing", L.net.Vidhi === -100_00);
 }
 
 /* ── reading what people type ──────────────────────── */
