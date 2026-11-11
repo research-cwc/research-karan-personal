@@ -228,6 +228,17 @@
         <h2 class="card-title">Spend by category</h2>
         <div id="catBreakdown" class="breakdown"></div>
       </div>
+
+      <div class="card">
+        <h2 class="card-title">Who's on this trip</h2>
+        <p class="card-sub">Anyone can add or remove someone here, and every open page updates at once. Someone with expenses logged stays — they're part of the history.</p>
+        <div id="rosterList" class="roster"></div>
+        <form id="rosterForm" class="roster-add">
+          <input id="rosterName" class="input" type="text" placeholder="Add someone" maxlength="24" autocomplete="off">
+          <button type="submit" class="btn">Add</button>
+        </form>
+        <p id="rosterError" class="form-error" hidden></p>
+      </div>
     </section>
 
     <!-- ── Settle up ── -->

@@ -4,7 +4,7 @@
    Money is integer paise everywhere. Every division uses largest-remainder
    allocation so the parts add back to the exact total. */
 
-const PEOPLE = [
+const DEFAULT_PEOPLE = [
   "Karan", "Vidhi", "Vatsal", "Dhwani", "Diksha", "Rohan", "Sakshi",
   "Jeet", "Dhruvina", "Yash", "Minal", "Vinay", "Varun",
 ];
@@ -171,7 +171,28 @@ function expenseDebts(paidMap, shareMap) {
   return out;
 }
 
-function buildLedger(list) {
+/** Every name the entries actually mention, so a person removed from the
+ *  roster while still carrying a balance keeps appearing until they are square. */
+function peopleInEntries(list) {
+  const seen = new Set();
+  for (const e of list || []) {
+    if (e.type === "settlement") { seen.add(e.from); seen.add(e.to); continue; }
+    for (const n of Object.keys(e.payersPaise || {})) seen.add(n);
+    for (const n of Object.keys(e.sharesPaise || {})) seen.add(n);
+  }
+  seen.delete(undefined);
+  return [...seen];
+}
+
+/** The roster plus anyone the entries mention, in roster order first. */
+function ledgerPeople(roster, list) {
+  const names = (roster && roster.length ? roster : DEFAULT_PEOPLE).slice();
+  for (const n of peopleInEntries(list)) if (!names.includes(n)) names.push(n);
+  return names;
+}
+
+function buildLedger(list, roster) {
+  const PEOPLE = ledgerPeople(roster, list);
   const zero = () => Object.fromEntries(PEOPLE.map((p) => [p, 0]));
   const paid = zero();
   const share = zero();
@@ -216,7 +237,7 @@ function buildLedger(list) {
     }
   }
 
-  return { paid, share, settledOut, settledIn, net, pair };
+  return { paid, share, settledOut, settledIn, net, pair, people: PEOPLE };
 }
 
 /** Greedy largest-creditor / largest-debtor matching — at most n−1 transfers. */
@@ -238,15 +259,16 @@ function minTransfers(net) {
   return out;
 }
 
-function directTransfers(pair) {
+function directTransfers(pair, people) {
   const out = [];
-  for (const a of PEOPLE) for (const b of PEOPLE) if (pair[a][b] > 0) out.push({ from: a, to: b, amount: pair[a][b] });
+  const names = people || Object.keys(pair);
+  for (const a of names) for (const b of names) if (pair[a] && pair[a][b] > 0) out.push({ from: a, to: b, amount: pair[a][b] });
   return out.sort((x, y) => y.amount - x.amount);
 }
 
 export {
-  PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
+  DEFAULT_PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
   money, parseRupees, parseNumber, allocate, computeShares,
   normalize, payerNames, shareNames, involves,
-  buildLedger, minTransfers, directTransfers,
+  buildLedger, minTransfers, directTransfers, peopleInEntries, ledgerPeople,
 };

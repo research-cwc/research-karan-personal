@@ -2,7 +2,8 @@
    Nothing here touches the browser — ledger.js is deliberately DOM-free. */
 
 import {
-  PEOPLE, allocate, computeShares, buildLedger, minTransfers, directTransfers, money,
+  DEFAULT_PEOPLE as PEOPLE, allocate, computeShares, buildLedger,
+  minTransfers, directTransfers, ledgerPeople, money,
 } from "../ledger.js";
 
 let passed = 0;
@@ -262,6 +263,46 @@ const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
   }
 
   console.log(`  ${scenarios} random trips exercised, worst case ${worstTransfers} transfers to settle`);
+}
+
+/* ── a roster that changes ─────────────────────────────────── */
+{
+  const roster = ["Ana", "Bo", "Cy"];
+  const e = {
+    type: "expense", amountPaise: 300_00, date: "2026-11-11", ts: 1,
+    payersPaise: { Ana: 300_00 },
+    sharesPaise: { Ana: 100_00, Bo: 100_00, Cy: 100_00 },
+    splitMethod: "equal", addedBy: "Ana",
+  };
+  const L = buildLedger([e], roster);
+  eq("a different roster works end to end", L.net.Ana, 200_00);
+  eq("and only contains that roster", Object.keys(L.net).join(","), "Ana,Bo,Cy");
+  eq("nets still sum to zero", sum(L.net), 0);
+
+  // Someone added mid-trip simply appears.
+  const grown = [...roster, "Di"];
+  const e2 = {
+    type: "expense", amountPaise: 400_00, date: "2026-11-12", ts: 2,
+    payersPaise: { Di: 400_00 },
+    sharesPaise: { Ana: 100_00, Bo: 100_00, Cy: 100_00, Di: 100_00 },
+    splitMethod: "equal", addedBy: "Di",
+  };
+  const L2 = buildLedger([e, e2], grown);
+  eq("a person added mid-trip is counted", L2.net.Di, 300_00);
+  eq("and the books still balance", sum(L2.net), 0);
+
+  // Someone dropped from the roster who still has entries must not vanish.
+  const L3 = buildLedger([e, e2], ["Ana", "Bo", "Cy"]);
+  ok("a dropped person with history still appears", L3.net.Di !== undefined);
+  eq("their balance is intact", L3.net.Di, 300_00);
+  eq("and the books still balance", sum(L3.net), 0);
+  eq("ledgerPeople keeps roster order then stragglers",
+    ledgerPeople(["Ana", "Bo", "Cy"], [e2]).join(","), "Ana,Bo,Cy,Di");
+
+  // Transfers must still clear a roster that changed.
+  const after = { ...L3.net };
+  for (const t of minTransfers(L3.net)) { after[t.from] += t.amount; after[t.to] -= t.amount; }
+  ok("transfers clear a changed roster", Object.values(after).every((v) => v === 0));
 }
 
 /* ── formatting ────────────────────────────────────────────── */

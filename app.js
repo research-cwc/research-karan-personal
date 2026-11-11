@@ -10,9 +10,9 @@
    that payer put in. Net balance per person always equals paid − share. */
 
 import {
-  PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
+  DEFAULT_PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
   money, parseRupees, parseNumber, computeShares,
-  normalize, payerNames, shareNames, involves,
+  normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
 } from "./ledger.js";
 
@@ -25,6 +25,9 @@ let me = null;
 let entries = [];
 let store = null;
 let selectedCat = "food";
+/* The roster lives in the database, not in this file. DEFAULT_PEOPLE is only
+   the starting point for a trip that has not saved one yet. */
+let PEOPLE = DEFAULT_PEOPLE.slice();
 let participants = new Set(PEOPLE);
 let payers = new Set();
 let payerMode = "one";
@@ -43,6 +46,7 @@ function localStore() {
   let list = [];
   try { list = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch { list = []; }
   let notify = () => {};
+  let rosterNotify = () => {};
   const save = () => {
     try { localStorage.setItem(KEY, JSON.stringify(list)); } catch { /* quota or private mode */ }
     notify(list.slice());
@@ -50,6 +54,16 @@ function localStore() {
   return {
     mode: "local",
     subscribe(fn) { notify = fn; fn(list.slice()); },
+    subscribeRoster(fn) {
+      let names = null;
+      try { names = JSON.parse(localStorage.getItem(`goa.roster.${TRIP_ID}`) || "null"); } catch { names = null; }
+      rosterNotify = fn;
+      fn(names);
+    },
+    async saveRoster(names) {
+      try { localStorage.setItem(`goa.roster.${TRIP_ID}`, JSON.stringify(names)); } catch { /* private mode */ }
+      rosterNotify(names);
+    },
     async add(entry) { list.unshift({ ...entry, id: `l${Date.now()}${Math.random().toString(36).slice(2, 7)}` }); save(); },
     async update(id, entry) { list = list.map((e) => (e.id === id ? { ...entry, id } : e)); save(); },
     async remove(id) { list = list.filter((e) => e.id !== id); save(); },
@@ -71,6 +85,14 @@ async function firebaseStore() {
     subscribe(fn, onError) {
       fs.onSnapshot(fs.query(col, fs.orderBy("ts", "desc")),
         (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), onError);
+    },
+    subscribeRoster(fn, onError) {
+      fs.onSnapshot(fs.doc(db, "trips", TRIP_ID, "meta", "roster"),
+        (snap) => fn(snap.exists() ? snap.data().names : null), onError);
+    },
+    async saveRoster(names) {
+      await fs.setDoc(fs.doc(db, "trips", TRIP_ID, "meta", "roster"),
+        { names, updatedBy: me, updatedTs: Date.now() });
     },
     async add(entry) { await fs.addDoc(col, entry); },
     async update(id, entry) { await fs.setDoc(ref(id), entry); },
@@ -611,8 +633,8 @@ function entryDetail(e) {
     head2.textContent = "Owes";
     const grid2 = document.createElement("div");
     grid2.className = "split-grid";
-    for (const p of PEOPLE) {
-      const s = (e.sharesPaise || {})[p];
+    for (const p of Object.keys(e.sharesPaise || {})) {
+      const s = e.sharesPaise[p];
       if (s === undefined) continue;
       const item = document.createElement("div");
       item.className = "split-item" + (pn.includes(p) ? " is-payer" : "");
@@ -681,8 +703,8 @@ function entryDetail(e) {
 function renderBalances(L) {
   const list = $("balanceList");
   list.innerHTML = "";
-  const max = Math.max(1, ...PEOPLE.map((p) => Math.abs(L.net[p])));
-  const sorted = [...PEOPLE].sort((a, b) => L.net[b] - L.net[a] || a.localeCompare(b));
+  const max = Math.max(1, ...L.people.map((p) => Math.abs(L.net[p])));
+  const sorted = [...L.people].sort((a, b) => L.net[b] - L.net[a] || a.localeCompare(b));
 
   for (const p of sorted) {
     const v = L.net[p];
@@ -728,7 +750,7 @@ function renderBalances(L) {
       const detail = document.createElement("div");
       detail.className = "bal-detail";
       const lines = [];
-      for (const other of PEOPLE) {
+      for (const other of L.people) {
         if (L.pair[p][other] > 0) lines.push({ text: `owes ${other}`, amt: L.pair[p][other], tone: "minus" });
         if (L.pair[other][p] > 0) lines.push({ text: `gets back from ${other}`, amt: L.pair[other][p], tone: "plus" });
       }
@@ -754,9 +776,9 @@ function renderBalances(L) {
     list.append(row);
   }
 
-  const sum = PEOPLE.reduce((a, p) => a + L.net[p], 0);
+  const sum = L.people.reduce((a, p) => a + L.net[p], 0);
   $("balanceCheck").textContent = sum === 0
-    ? "All 13 balances add up to exactly ₹0 — the books are consistent."
+    ? `All ${L.people.length} balances add up to exactly ₹0 — the books are consistent.`
     : `Balances are off by ${money(sum)} — please tell Karan.`;
   $("balanceCheck").className = "check " + (sum === 0 ? "is-ok" : "is-off");
 
@@ -797,11 +819,119 @@ function renderBalances(L) {
   }
 }
 
+/* ── The roster ────────────────────────────────────────────── */
+function applyRoster(names) {
+  const keep = {
+    who: $("whoSelect").value, paidBy: $("paidBy").value,
+    payFrom: $("payFrom").value, payTo: $("payTo").value, filter: $("filterPerson").value,
+  };
+  PEOPLE = names.slice();
+  const withMe = me && !PEOPLE.includes(me) ? [...PEOPLE, me] : PEOPLE;
+
+  fillSelect($("gateSelect"), PEOPLE, "Select your name…");
+  fillSelect($("whoSelect"), withMe);
+  fillSelect($("paidBy"), PEOPLE);
+  fillSelect($("payFrom"), PEOPLE);
+  fillSelect($("payTo"), PEOPLE);
+  fillSelect($("filterPerson"), PEOPLE, "Everyone");
+
+  const restore = (id, value, fallback) => {
+    const el = $(id);
+    el.value = [...el.options].some((o) => o.value === value) ? value : fallback;
+  };
+  restore("whoSelect", keep.who, me || PEOPLE[0]);
+  restore("paidBy", keep.paidBy, me || PEOPLE[0]);
+  restore("payFrom", keep.payFrom, me || PEOPLE[0]);
+  restore("payTo", keep.payTo, PEOPLE.find((p) => p !== me) || PEOPLE[0]);
+  restore("filterPerson", keep.filter, "");
+
+  participants = new Set([...participants].filter((p) => PEOPLE.includes(p)));
+  payers = new Set([...payers].filter((p) => PEOPLE.includes(p)));
+  if (!payers.size && me) payers.add(me);
+
+  renderParticipantChips();
+  renderPayerRows();
+  renderAll();
+}
+
+function showRosterError(msg) {
+  const el = $("rosterError");
+  el.hidden = !msg;
+  el.textContent = msg || "";
+}
+
+function renderRoster(L) {
+  const box = $("rosterList");
+  if (!box) return;
+  box.innerHTML = "";
+  const withHistory = new Set(peopleInEntries(entries));
+
+  for (const p of L.people) {
+    const row = document.createElement("div");
+    row.className = "roster-row";
+
+    const name = document.createElement("span");
+    name.className = "roster-name";
+    name.textContent = p;
+    if (p === me) {
+      const tag = document.createElement("span");
+      tag.className = "you-tag";
+      tag.textContent = "you";
+      name.append(tag);
+    }
+    if (!PEOPLE.includes(p)) {
+      const tag = document.createElement("span");
+      tag.className = "gone-tag";
+      tag.textContent = "removed";
+      name.append(tag);
+    }
+
+    const note = document.createElement("span");
+    note.className = "roster-note";
+
+    row.append(name, note);
+
+    if (withHistory.has(p)) {
+      note.textContent = L.net[p] === 0 ? "has expenses · settled" : `has expenses · ${L.net[p] > 0 ? "is owed" : "owes"} ${money(Math.abs(L.net[p]))}`;
+    } else if (PEOPLE.includes(p)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-ghost btn-xs";
+      btn.textContent = "Remove";
+      btn.onclick = async () => {
+        showRosterError("");
+        btn.disabled = true;
+        try { await store.saveRoster(PEOPLE.filter((n) => n !== p)); }
+        catch (err) { btn.disabled = false; showRosterError(`Could not save: ${err.message}`); }
+      };
+      note.textContent = "nothing logged yet";
+      row.append(btn);
+    }
+    box.append(row);
+  }
+}
+
+async function onAddPerson(ev) {
+  ev.preventDefault();
+  showRosterError("");
+  const raw = $("rosterName").value.trim().replace(/\s+/g, " ");
+  if (!raw) return showRosterError("Type a name first.");
+  if (raw.length > 24) return showRosterError("That name is too long.");
+  if (PEOPLE.some((p) => p.toLowerCase() === raw.toLowerCase())) return showRosterError(`${raw} is already on the trip.`);
+  if (PEOPLE.length >= 50) return showRosterError("That is as many people as this register takes.");
+  try {
+    await store.saveRoster([...PEOPLE, raw]);
+    $("rosterName").value = "";
+  } catch (err) {
+    showRosterError(`Could not save: ${err.message}`);
+  }
+}
+
 /* ── Settle up ─────────────────────────────────────────────── */
 function renderSettle(L) {
   const box = $("settleList");
   box.innerHTML = "";
-  const transfers = settleView === "simple" ? minTransfers(L.net) : directTransfers(L.pair);
+  const transfers = settleView === "simple" ? minTransfers(L.net) : directTransfers(L.pair, L.people);
 
   $("settleSub").textContent = settleView === "simple"
     ? "Make these transfers and every balance lands at zero. Fewest possible payments, so money may move between people who never shared an expense."
@@ -876,11 +1006,12 @@ function renderSummary(L) {
 }
 
 function renderAll() {
-  const L = buildLedger(entries);
+  const L = buildLedger(entries, PEOPLE);
   renderSummary(L);
   renderEntries();
   renderBalances(L);
   renderSettle(L);
+  renderRoster(L);
 }
 
 function showError(msg) {
@@ -1002,6 +1133,7 @@ function wireUi() {
   $("expenseForm").addEventListener("submit", onSubmit);
   $("filterPerson").onchange = renderEntries;
   $("exportBtn").onclick = exportCsv;
+  $("rosterForm").addEventListener("submit", onAddPerson);
 }
 
 async function start() {
@@ -1016,11 +1148,15 @@ async function start() {
   }
 
   const onData = (list) => { entries = list.map(normalize); renderAll(); };
+  // No saved roster yet means this trip has never had one — fall back to the
+  // names the register shipped with rather than showing an empty picker.
+  const onRoster = (names) => applyRoster(names && names.length ? names : DEFAULT_PEOPLE);
 
   if (cfg.firebase && cfg.firebase.projectId) {
     try {
       store = await firebaseStore();
       $("syncNote").textContent = `Live · everyone on this link shares one register (trip: ${TRIP_ID})`;
+      store.subscribeRoster(onRoster, () => onRoster(null));
       store.subscribe(onData, (err) => showStatus(`Lost the live connection: ${err.message}`, true));
       return;
     } catch (err) {
@@ -1032,6 +1168,7 @@ async function start() {
 
   store = localStore();
   $("syncNote").textContent = "Local mode · saved in this browser only";
+  store.subscribeRoster(onRoster);
   store.subscribe(onData);
 }
 
