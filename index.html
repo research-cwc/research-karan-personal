@@ -60,7 +60,11 @@
         <span class="summary-value" id="sumTotal">₹0</span>
       </div>
       <div class="summary-cell">
-        <span class="summary-label">Your spend share</span>
+        <span class="summary-label">You paid</span>
+        <span class="summary-value" id="sumYouPaid">₹0</span>
+      </div>
+      <div class="summary-cell">
+        <span class="summary-label">Your share</span>
         <span class="summary-value" id="sumYourShare">₹0</span>
       </div>
       <div class="summary-cell">
@@ -85,8 +89,11 @@
 
       <form id="expenseForm" class="card form" autocomplete="off">
         <div class="form-head">
-          <h2 class="card-title">Add an expense</h2>
-          <button type="button" id="settleToggle" class="btn btn-ghost btn-sm">Record a payment instead</button>
+          <h2 class="card-title" id="formTitle">Add an expense</h2>
+          <div class="form-head-actions">
+            <button type="button" id="cancelEdit" class="btn btn-ghost btn-sm" hidden>Cancel</button>
+            <button type="button" id="settleToggle" class="btn btn-ghost btn-sm">Record a payment instead</button>
+          </div>
         </div>
 
         <div class="row row-amount">
@@ -97,32 +104,44 @@
               <input id="amount" class="input input-amount" type="text" inputmode="decimal" placeholder="0" required>
             </div>
           </label>
-          <label class="field field-desc">
+          <label class="field field-desc" id="descField">
             <span class="field-label">What for</span>
             <input id="desc" class="input" type="text" placeholder="Dinner at Thalassa" maxlength="80" required>
           </label>
         </div>
 
-        <div class="field">
-          <span class="field-label">Category</span>
-          <div id="catRow" class="chips chips-cat"></div>
-        </div>
-
         <div class="row">
           <label class="field">
-            <span class="field-label">Paid by</span>
-            <select id="paidBy" class="select"></select>
+            <span class="field-label">Date</span>
+            <input id="date" class="input" type="date" required>
           </label>
-          <label class="field">
-            <span class="field-label">Split</span>
-            <select id="splitMode" class="select">
-              <option value="equal">Equally</option>
-              <option value="exact">By exact amounts</option>
-            </select>
-          </label>
+          <div class="field" id="catField">
+            <span class="field-label">Category</span>
+            <div id="catRow" class="chips chips-cat"></div>
+          </div>
         </div>
 
-        <div class="field">
+        <!-- Who paid -->
+        <div class="field" id="paidField">
+          <div class="field-label-row">
+            <span class="field-label">Paid by</span>
+            <div class="seg" role="group" aria-label="Number of payers">
+              <button type="button" class="seg-btn is-on" data-payers="one">One person</button>
+              <button type="button" class="seg-btn" data-payers="many">Several people</button>
+            </div>
+          </div>
+          <select id="paidBy" class="select"></select>
+          <div id="payersBox" class="sub" hidden>
+            <div class="sub-head">
+              <span class="sub-label">Who put in how much</span>
+              <span id="payersSum" class="sub-sum">₹0 of ₹0</span>
+            </div>
+            <div id="payersRows" class="amount-rows"></div>
+          </div>
+        </div>
+
+        <!-- Split -->
+        <div class="field" id="splitField">
           <div class="field-label-row">
             <span class="field-label">Split between <span id="partCount" class="count">13</span></span>
             <div class="field-actions">
@@ -132,14 +151,30 @@
             </div>
           </div>
           <div id="partRow" class="chips"></div>
-        </div>
 
-        <div id="exactBox" class="exact" hidden>
-          <div class="exact-head">
-            <span class="field-label">Exact share per person</span>
-            <span id="exactSum" class="exact-sum">₹0 of ₹0</span>
+          <label class="field field-tight">
+            <span class="field-label">How</span>
+            <select id="splitMode" class="select">
+              <option value="equal">Equally</option>
+              <option value="exact">By exact amounts</option>
+              <option value="percent">By percentage</option>
+              <option value="shares">By shares (weights)</option>
+              <option value="adjust">Equally, plus extras</option>
+            </select>
+          </label>
+
+          <div id="splitBox" class="sub" hidden>
+            <div class="sub-head">
+              <span class="sub-label" id="splitHint">Enter a value per person</span>
+              <span id="splitSum" class="sub-sum">—</span>
+            </div>
+            <div id="splitRows" class="amount-rows"></div>
           </div>
-          <div id="exactRows" class="exact-rows"></div>
+
+          <div id="preview" class="preview" hidden>
+            <p class="preview-head">Each person ends up owing</p>
+            <div id="previewRows" class="preview-rows"></div>
+          </div>
         </div>
 
         <!-- Payment (settlement) fields -->
@@ -153,6 +188,11 @@
             <select id="payTo" class="select"></select>
           </label>
         </div>
+
+        <label class="field">
+          <span class="field-label">Note <span class="count">optional</span></span>
+          <input id="note" class="input" type="text" placeholder="Anything worth remembering" maxlength="200">
+        </label>
 
         <p id="formError" class="form-error" hidden></p>
 
@@ -180,8 +220,9 @@
     <section id="view-balances" class="view" hidden>
       <div class="card">
         <h2 class="card-title">Where everyone stands</h2>
-        <p class="card-sub">Positive means the trip owes them. Negative means they owe the trip.</p>
+        <p class="card-sub">Positive means the trip owes them. Tap a name to see who it's with.</p>
         <div id="balanceList" class="balances"></div>
+        <p id="balanceCheck" class="check"></p>
       </div>
       <div class="card">
         <h2 class="card-title">Spend by category</h2>
@@ -192,8 +233,14 @@
     <!-- ── Settle up ── -->
     <section id="view-settle" class="view" hidden>
       <div class="card">
-        <h2 class="card-title">Fewest payments to clear everything</h2>
-        <p class="card-sub">Make these transfers and every balance lands at zero. Tap <strong>Mark paid</strong> once the money has actually moved.</p>
+        <div class="form-head">
+          <h2 class="card-title">How to clear it</h2>
+          <div class="seg" role="group" aria-label="Settlement view">
+            <button type="button" class="seg-btn is-on" data-settle="simple">Fewest payments</button>
+            <button type="button" class="seg-btn" data-settle="direct">Who owes whom</button>
+          </div>
+        </div>
+        <p class="card-sub" id="settleSub">Make these transfers and every balance lands at zero.</p>
         <div id="settleList" class="settlements"></div>
       </div>
     </section>

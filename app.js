@@ -1,24 +1,20 @@
 /* Goa Register — shared trip expense ledger.
-   Money is handled as integer paise everywhere; rupees only appear at the edges
-   (parsing input, printing). Splitting distributes the remainder paise one by
-   one so the shares always add back to the exact total. */
 
-const PEOPLE = [
-  "Karan", "Vidhi", "Vatsal", "Dhwani", "Diksha", "Rohan", "Sakshi",
-  "Jeet", "Dhruvina", "Yash", "Minal", "Vinay", "Varun",
-];
+   Money is integer paise everywhere; rupees exist only at the edges (parsing
+   input, printing). Every division uses largest-remainder allocation, so the
+   parts always add back to the exact total — no paise appears or vanishes.
 
-const CATEGORIES = [
-  { id: "food",     label: "Food",       color: "#C2561F" },
-  { id: "stay",     label: "Stay",       color: "#1B5FA8" },
-  { id: "travel",   label: "Travel",     color: "#0B7A63" },
-  { id: "drinks",   label: "Drinks",     color: "#8E3B8E" },
-  { id: "activity", label: "Activities", color: "#1F8FA8" },
-  { id: "shopping", label: "Shopping",   color: "#9A6414" },
-  { id: "other",    label: "Other",      color: "#5A6B7A" },
-];
-const CAT = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]));
-const SETTLE_COLOR = "#0B7A63";
+   An expense records who put money in (one payer or several) and who the cost
+   falls on (equally, exact, percentage, shares, or equally-plus-extras). Debts
+   are tracked pairwise: each participant owes each payer in proportion to what
+   that payer put in. Net balance per person always equals paid − share. */
+
+import {
+  PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
+  money, parseRupees, parseNumber, computeShares,
+  normalize, payerNames, shareNames, involves,
+  buildLedger, minTransfers, directTransfers,
+} from "./ledger.js";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -30,45 +26,16 @@ let entries = [];
 let store = null;
 let selectedCat = "food";
 let participants = new Set(PEOPLE);
+let payers = new Set();
+let payerMode = "one";
 let settleMode = false;
+let editingId = null;
 let openEntryId = null;
+let openPerson = null;
 let pendingDelete = null;
+let settleView = "simple";
 
 const $ = (id) => document.getElementById(id);
-
-/* ── Money helpers ─────────────────────────────────────────── */
-const inr = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
-const inr2 = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-function money(paise, { sign = false } = {}) {
-  const neg = paise < 0;
-  const abs = Math.abs(paise);
-  const whole = abs % 100 === 0;
-  const body = whole ? inr.format(abs / 100) : inr2.format(abs / 100);
-  const prefix = sign ? (neg ? "−" : "+") : neg ? "−" : "";
-  return `${prefix}₹${body}`;
-}
-
-function parseRupees(text) {
-  const clean = String(text).replace(/[^0-9.]/g, "");
-  if (!clean || clean.split(".").length > 2) return NaN;
-  const value = Number(clean);
-  if (!isFinite(value)) return NaN;
-  return Math.round(value * 100);
-}
-
-/** Split `total` paise across `names`, handing the leftover paise out one each. */
-function equalShares(total, names) {
-  const n = names.length;
-  const base = Math.floor(total / n);
-  let left = total - base * n;
-  const out = {};
-  for (const name of names) {
-    out[name] = base + (left > 0 ? 1 : 0);
-    if (left > 0) left -= 1;
-  }
-  return out;
-}
 
 /* ── Storage ───────────────────────────────────────────────── */
 function localStore() {
@@ -83,11 +50,8 @@ function localStore() {
   return {
     mode: "local",
     subscribe(fn) { notify = fn; fn(list.slice()); },
-    async add(entry) {
-      list.unshift({ ...entry, id: `l${Date.now()}${Math.random().toString(36).slice(2, 7)}` });
-      list.sort((a, b) => b.ts - a.ts);
-      save();
-    },
+    async add(entry) { list.unshift({ ...entry, id: `l${Date.now()}${Math.random().toString(36).slice(2, 7)}` }); save(); },
+    async update(id, entry) { list = list.map((e) => (e.id === id ? { ...entry, id } : e)); save(); },
     async remove(id) { list = list.filter((e) => e.id !== id); save(); },
   };
 }
@@ -100,80 +64,69 @@ async function firebaseStore() {
   const app = initializeApp(cfg.firebase);
   const db = fs.getFirestore(app);
   const col = fs.collection(db, "trips", TRIP_ID, "entries");
+  const ref = (id) => fs.doc(db, "trips", TRIP_ID, "entries", id);
 
   return {
     mode: "cloud",
     subscribe(fn, onError) {
-      fs.onSnapshot(
-        fs.query(col, fs.orderBy("ts", "desc")),
-        (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-        onError,
-      );
+      fs.onSnapshot(fs.query(col, fs.orderBy("ts", "desc")),
+        (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), onError);
     },
     async add(entry) { await fs.addDoc(col, entry); },
-    async remove(id) { await fs.deleteDoc(fs.doc(db, "trips", TRIP_ID, "entries", id)); },
+    async update(id, entry) { await fs.setDoc(ref(id), entry); },
+    async remove(id) { await fs.deleteDoc(ref(id)); },
   };
 }
 
-/* ── Ledger maths ──────────────────────────────────────────── */
-function computeNet(list) {
-  const net = Object.fromEntries(PEOPLE.map((p) => [p, 0]));
-  for (const e of list) {
-    if (e.type === "settlement") {
-      if (net[e.from] !== undefined) net[e.from] += e.amountPaise;
-      if (net[e.to] !== undefined) net[e.to] -= e.amountPaise;
-    } else {
-      if (net[e.paidBy] !== undefined) net[e.paidBy] += e.amountPaise;
-      for (const [name, share] of Object.entries(e.sharesPaise || {})) {
-        if (net[name] !== undefined) net[name] -= share;
-      }
-    }
+/* ── Form: reading the current state ───────────────────────── */
+function selectedParticipants() { return PEOPLE.filter((p) => participants.has(p)); }
+function selectedPayers() { return PEOPLE.filter((p) => payers.has(p)); }
+
+function readAmountRows(container) {
+  const out = {};
+  let bad = null;
+  for (const input of container.querySelectorAll("input")) {
+    const raw = input.value.trim();
+    const v = raw === "" ? 0 : (input.dataset.kind === "number" ? parseNumber(raw) : parseRupees(raw));
+    if (isNaN(v)) bad = input.dataset.name;
+    out[input.dataset.name] = isNaN(v) ? 0 : v;
   }
-  return net;
+  return { values: out, bad };
 }
 
-/** Greedy largest-creditor / largest-debtor matching — never more than n-1 transfers. */
-function minTransfers(net) {
-  const owed = Object.entries(net).filter(([, v]) => v > 0).map(([n, v]) => ({ n, v }));
-  const owes = Object.entries(net).filter(([, v]) => v < 0).map(([n, v]) => ({ n, v: -v }));
-  owed.sort((a, b) => b.v - a.v);
-  owes.sort((a, b) => b.v - a.v);
-  const out = [];
-  let i = 0, j = 0;
-  while (i < owes.length && j < owed.length) {
-    const amount = Math.min(owes[i].v, owed[j].v);
-    if (amount > 0) out.push({ from: owes[i].n, to: owed[j].n, amount });
-    owes[i].v -= amount;
-    owed[j].v -= amount;
-    if (owes[i].v === 0) i += 1;
-    if (owed[j].v === 0) j += 1;
+function currentPayers(total) {
+  if (payerMode === "one") {
+    const who = $("paidBy").value;
+    return { values: { [who]: total }, bad: null };
   }
-  return out;
+  return readAmountRows($("payersRows"));
 }
 
-/* ── Rendering ─────────────────────────────────────────────── */
-function fillSelect(el, names, { placeholder } = {}) {
-  el.innerHTML = "";
-  if (placeholder) el.append(new Option(placeholder, ""));
-  for (const n of names) el.append(new Option(n, n));
+function currentSplitInput() {
+  const method = $("splitMode").value;
+  if (method === "equal") return { values: {}, bad: null };
+  return readAmountRows($("splitRows"));
 }
 
-function renderChips() {
-  const catRow = $("catRow");
-  catRow.innerHTML = "";
+/* ── Form: rendering ───────────────────────────────────────── */
+function renderCats() {
+  const row = $("catRow");
+  row.innerHTML = "";
   for (const c of CATEGORIES) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip" + (c.id === selectedCat ? " is-on" : "");
-    b.style.color = c.id === selectedCat ? c.color : "";
+    if (c.id === selectedCat) b.style.color = c.color;
     b.innerHTML = `<span class="chip-dot" style="background:${c.color}"></span>`;
     b.append(c.label);
-    b.onclick = () => { selectedCat = c.id; renderChips(); };
-    catRow.append(b);
+    b.onclick = () => { selectedCat = c.id; renderCats(); };
+    row.append(b);
   }
+}
 
-  const partRow = $("partRow");
-  partRow.innerHTML = "";
+function renderParticipantChips() {
+  const row = $("partRow");
+  row.innerHTML = "";
   for (const p of PEOPLE) {
     const b = document.createElement("button");
     b.type = "button";
@@ -181,73 +134,359 @@ function renderChips() {
     b.textContent = p === me ? `${p} (you)` : p;
     b.onclick = () => {
       if (participants.has(p)) participants.delete(p); else participants.add(p);
-      renderChips();
-      renderExact();
+      renderParticipantChips();
+      renderSplitRows();
     };
-    partRow.append(b);
+    row.append(b);
   }
   $("partCount").textContent = participants.size;
 }
 
-function renderExact() {
-  const box = $("exactBox");
-  const on = $("splitMode").value === "exact" && !settleMode;
-  box.hidden = !on;
-  if (!on) return;
+function renderPayerRows() {
+  const box = $("payersBox");
+  box.hidden = payerMode !== "many";
+  $("paidBy").hidden = payerMode === "many";
+  if (payerMode !== "many") { updatePreview(); return; }
 
-  const rows = $("exactRows");
-  const existing = Object.fromEntries(
-    [...rows.querySelectorAll("input")].map((i) => [i.dataset.name, i.value]),
-  );
+  const rows = $("payersRows");
+  const prev = Object.fromEntries([...rows.querySelectorAll("input")].map((i) => [i.dataset.name, i.value]));
   rows.innerHTML = "";
   for (const p of PEOPLE) {
-    if (!participants.has(p)) continue;
     const row = document.createElement("label");
-    row.className = "exact-row";
-    const span = document.createElement("span");
-    span.textContent = p;
+    row.className = "amount-row" + (payers.has(p) ? " is-on" : "");
+    const tick = document.createElement("button");
+    tick.type = "button";
+    tick.className = "row-toggle" + (payers.has(p) ? " is-on" : "");
+    tick.textContent = p === me ? `${p} (you)` : p;
+    tick.onclick = () => {
+      if (payers.has(p)) payers.delete(p); else payers.add(p);
+      renderPayerRows();
+    };
     const input = document.createElement("input");
     input.type = "text";
     input.inputMode = "decimal";
     input.placeholder = "0";
     input.dataset.name = p;
-    input.value = existing[p] || "";
-    input.oninput = updateExactSum;
-    row.append(span, input);
+    input.value = prev[p] || "";
+    input.disabled = !payers.has(p);
+    input.oninput = updatePreview;
+    row.append(tick, input);
     rows.append(row);
   }
-  updateExactSum();
+  updatePreview();
 }
 
-function readExact() {
-  const out = {};
-  let sum = 0;
-  for (const input of $("exactRows").querySelectorAll("input")) {
-    const v = input.value.trim() === "" ? 0 : parseRupees(input.value);
-    if (isNaN(v)) return { bad: input.dataset.name };
-    out[input.dataset.name] = v;
-    sum += v;
+function renderSplitRows() {
+  const method = $("splitMode").value;
+  const box = $("splitBox");
+  const on = method !== "equal" && !settleMode;
+  box.hidden = !on;
+
+  if (on) {
+    const meta = SPLIT_HINTS[method];
+    $("splitHint").textContent = meta.hint;
+    const rows = $("splitRows");
+    const prev = Object.fromEntries([...rows.querySelectorAll("input")].map((i) => [i.dataset.name, i.value]));
+    rows.innerHTML = "";
+    for (const p of selectedParticipants()) {
+      const row = document.createElement("label");
+      row.className = "amount-row is-on";
+      const tag = document.createElement("span");
+      tag.className = "row-name";
+      tag.textContent = p === me ? `${p} (you)` : p;
+      const wrap = document.createElement("span");
+      wrap.className = "unit-wrap";
+      const unit = document.createElement("span");
+      unit.className = "unit";
+      unit.textContent = meta.unit;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.inputMode = "decimal";
+      input.placeholder = "0";
+      input.dataset.name = p;
+      input.dataset.kind = method === "exact" || method === "adjust" ? "money" : "number";
+      input.value = prev[p] || "";
+      input.oninput = updatePreview;
+      wrap.append(unit, input);
+      row.append(tag, wrap);
+      rows.append(row);
+    }
   }
-  return { shares: out, sum };
+  updatePreview();
 }
 
-function updateExactSum() {
+function updatePreview() {
+  if (settleMode) { $("preview").hidden = true; return; }
   const total = parseRupees($("amount").value) || 0;
-  const read = readExact();
-  const el = $("exactSum");
-  if (read.bad) { el.textContent = "Check the numbers"; el.className = "exact-sum is-off"; return; }
-  el.textContent = `${money(read.sum)} of ${money(total)}`;
-  el.className = "exact-sum " + (total > 0 && read.sum === total ? "is-ok" : "is-off");
+  const names = selectedParticipants();
+
+  // payers running total
+  if (payerMode === "many") {
+    const { values } = currentPayers(total);
+    const sum = selectedPayers().reduce((a, n) => a + (values[n] || 0), 0);
+    const el = $("payersSum");
+    el.textContent = `${money(sum)} of ${money(total)}`;
+    el.className = "sub-sum " + (total > 0 && sum === total ? "is-ok" : "is-off");
+  }
+
+  const method = $("splitMode").value;
+  const { values } = currentSplitInput();
+  const result = total > 0 ? computeShares(method, total, names, values) : { error: "" };
+
+  if (method !== "equal") {
+    const el = $("splitSum");
+    if (method === "percent") {
+      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
+      el.textContent = `${Math.round(sum * 100) / 100}% of 100%`;
+      el.className = "sub-sum " + (Math.abs(sum - 100) < 0.001 ? "is-ok" : "is-off");
+    } else if (method === "exact") {
+      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
+      el.textContent = `${money(sum)} of ${money(total)}`;
+      el.className = "sub-sum " + (total > 0 && sum === total ? "is-ok" : "is-off");
+    } else if (method === "shares") {
+      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
+      el.textContent = `${sum} share${sum === 1 ? "" : "s"}`;
+      el.className = "sub-sum " + (sum > 0 ? "is-ok" : "is-off");
+    } else {
+      const sum = names.reduce((a, n) => a + (values[n] || 0), 0);
+      el.textContent = `${money(sum)} in extras`;
+      el.className = "sub-sum " + (sum <= total ? "is-ok" : "is-off");
+    }
+  }
+
+  const box = $("preview");
+  const rows = $("previewRows");
+  if (!total || !names.length || result.error || !result.shares) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  rows.innerHTML = "";
+  for (const n of names) {
+    const item = document.createElement("div");
+    item.className = "preview-item";
+    const a = document.createElement("span");
+    a.textContent = n === me ? `${n} (you)` : n;
+    const b = document.createElement("span");
+    b.textContent = money(result.shares[n]);
+    item.append(a, b);
+    rows.append(item);
+  }
 }
 
-function dayLabel(ts) {
-  const d = new Date(ts);
-  const today = new Date();
-  const yest = new Date(Date.now() - 86400000);
-  const same = (a, b) => a.toDateString() === b.toDateString();
-  if (same(d, today)) return "Today";
-  if (same(d, yest)) return "Yesterday";
+/* ── Form: modes ───────────────────────────────────────────── */
+function setPayerMode(mode) {
+  payerMode = mode;
+  for (const btn of document.querySelectorAll("[data-payers]")) {
+    btn.classList.toggle("is-on", btn.dataset.payers === mode);
+  }
+  if (mode === "many" && !payers.size && me) payers.add(me);
+  renderPayerRows();
+}
+
+function setSettleMode(on) {
+  settleMode = on;
+  $("settleBox").hidden = !on;
+  $("descField").hidden = on;
+  $("catField").hidden = on;
+  $("paidField").hidden = on;
+  $("splitField").hidden = on;
+  $("desc").required = !on;
+  if (!editingId) {
+    $("formTitle").textContent = on ? "Record a payment" : "Add an expense";
+    $("submitBtn").textContent = on ? "Record payment" : "Add expense";
+  }
+  $("settleToggle").textContent = on ? "Back to adding an expense" : "Record a payment instead";
+  renderSplitRows();
+}
+
+function resetForm() {
+  editingId = null;
+  $("amount").value = "";
+  $("desc").value = "";
+  $("note").value = "";
+  $("date").value = new Date().toLocaleDateString("en-CA");
+  selectedCat = "food";
+  participants = new Set(PEOPLE);
+  payers = new Set(me ? [me] : []);
+  $("splitMode").value = "equal";
+  $("paidBy").value = me || PEOPLE[0];
+  $("cancelEdit").hidden = true;
+  $("formTitle").textContent = settleMode ? "Record a payment" : "Add an expense";
+  $("submitBtn").textContent = settleMode ? "Record payment" : "Add expense";
+  $("splitRows").innerHTML = "";
+  $("payersRows").innerHTML = "";
+  showError("");
+  setPayerMode("one");
+  renderCats();
+  renderParticipantChips();
+  renderSplitRows();
+}
+
+function loadForEdit(e) {
+  editingId = e.id;
+  showError("");
+  $("amount").value = (e.amountPaise / 100).toString();
+  $("date").value = e.date;
+  $("note").value = e.note || "";
+
+  if (e.type === "settlement") {
+    setSettleMode(true);
+    $("payFrom").value = e.from;
+    $("payTo").value = e.to;
+  } else {
+    setSettleMode(false);
+    $("desc").value = e.desc;
+    selectedCat = CAT[e.category] ? e.category : "other";
+    participants = new Set(Object.keys(e.sharesPaise));
+    const pn = payerNames(e);
+    if (pn.length <= 1) {
+      setPayerMode("one");
+      $("paidBy").value = pn[0] || me;
+    } else {
+      payers = new Set(pn);
+      setPayerMode("many");
+      for (const input of $("payersRows").querySelectorAll("input")) {
+        if (e.payersPaise[input.dataset.name]) input.value = (e.payersPaise[input.dataset.name] / 100).toString();
+      }
+    }
+    $("splitMode").value = e.splitMethod || "equal";
+    renderCats();
+    renderParticipantChips();
+    renderSplitRows();
+    if (e.splitInput) {
+      for (const input of $("splitRows").querySelectorAll("input")) {
+        const v = e.splitInput[input.dataset.name];
+        if (v === undefined) continue;
+        input.value = (input.dataset.kind === "money" ? v / 100 : v).toString();
+      }
+    }
+  }
+
+  $("formTitle").textContent = e.type === "settlement" ? "Edit this payment" : "Edit this expense";
+  $("submitBtn").textContent = "Save changes";
+  $("cancelEdit").hidden = false;
+  updatePreview();
+  $("expenseForm").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ── Submit ────────────────────────────────────────────────── */
+async function onSubmit(ev) {
+  ev.preventDefault();
+  showError("");
+
+  const amountPaise = parseRupees($("amount").value);
+  if (isNaN(amountPaise) || amountPaise <= 0) return showError("Enter an amount greater than zero.");
+  const date = $("date").value;
+  if (!date) return showError("Pick a date.");
+  const note = $("note").value.trim();
+
+  let entry;
+
+  if (settleMode) {
+    const from = $("payFrom").value;
+    const to = $("payTo").value;
+    if (from === to) return showError("A payment needs two different people.");
+    entry = { type: "settlement", from, to, amountPaise, date, addedBy: me, ts: Date.now() };
+  } else {
+    const desc = $("desc").value.trim();
+    if (!desc) return showError("Add a short description.");
+
+    const pay = currentPayers(amountPaise);
+    if (pay.bad) return showError(`That is not a number for ${pay.bad}.`);
+    const payerList = payerMode === "one" ? [$("paidBy").value] : selectedPayers();
+    if (!payerList.length) return showError("Pick who paid.");
+    const payersPaise = {};
+    for (const n of payerList) if (pay.values[n] > 0) payersPaise[n] = pay.values[n];
+    const paidSum = Object.values(payersPaise).reduce((a, b) => a + b, 0);
+    if (!Object.keys(payersPaise).length) return showError("Enter what each payer put in.");
+    if (paidSum !== amountPaise) {
+      return showError(`The payers put in ${money(paidSum)}, but the expense is ${money(amountPaise)} — ${money(Math.abs(amountPaise - paidSum))} ${paidSum > amountPaise ? "too much" : "short"}.`);
+    }
+
+    const method = $("splitMode").value;
+    const names = selectedParticipants();
+    const inp = currentSplitInput();
+    if (inp.bad) return showError(`That is not a number for ${inp.bad}.`);
+    const result = computeShares(method, amountPaise, names, inp.values);
+    if (result.error) return showError(result.error);
+
+    const sharesPaise = {};
+    for (const [n, v] of Object.entries(result.shares)) if (v !== 0) sharesPaise[n] = v;
+    if (!Object.keys(sharesPaise).length) return showError("Nobody ends up owing anything — check the split.");
+
+    entry = {
+      type: "expense",
+      desc,
+      category: selectedCat,
+      amountPaise,
+      date,
+      payersPaise,
+      sharesPaise,
+      splitMethod: method,
+      addedBy: me,
+      ts: Date.now(),
+    };
+    if (method !== "equal") entry.splitInput = Object.fromEntries(names.map((n) => [n, inp.values[n] || 0]));
+  }
+
+  if (note) entry.note = note;
+
+  const btn = $("submitBtn");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    if (editingId) {
+      const old = entries.find((e) => e.id === editingId);
+      entry.addedBy = old.addedBy;
+      entry.ts = old.ts;
+      entry.editedBy = me;
+      entry.editedTs = Date.now();
+      await store.update(editingId, entry);
+      openEntryId = editingId;
+      resetForm();
+      if (settleMode) setSettleMode(false);
+    } else {
+      await store.add(entry);
+      const keepSettle = settleMode;
+      resetForm();
+      if (keepSettle) setSettleMode(false);
+    }
+  } catch (err) {
+    showError(`Could not save: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = editingId ? "Save changes" : label;
+  }
+}
+
+/* ── Entry list ────────────────────────────────────────────── */
+function sortedEntries() {
+  return entries.slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts));
+}
+
+function dayLabel(dateStr) {
+  const today = new Date().toLocaleDateString("en-CA");
+  const yest = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+  if (dateStr === today) return "Today";
+  if (dateStr === yest) return "Yesterday";
+  const d = new Date(`${dateStr}T12:00:00`);
   return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function payerLabel(e) {
+  const names = payerNames(e);
+  if (names.length === 1) return `${names[0]} paid`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} paid`;
+  return `${names[0]} and ${names.length - 1} others paid`;
+}
+
+function splitLabel(e) {
+  const n = shareNames(e).length;
+  const how = { equal: "equally", exact: "by exact amounts", percent: "by percentage", shares: "by shares", adjust: "equally plus extras" }[e.splitMethod] || "";
+  if (n === PEOPLE.length) return `split ${how} between everyone`;
+  return `split ${how} ${n} way${n === 1 ? "" : "s"}`;
 }
 
 function renderEntries() {
@@ -255,31 +494,41 @@ function renderEntries() {
   const filter = $("filterPerson").value;
   list.innerHTML = "";
 
-  const shown = entries.filter((e) => {
-    if (!filter) return true;
-    if (e.type === "settlement") return e.from === filter || e.to === filter;
-    return e.paidBy === filter || (e.participants || []).includes(filter);
-  });
-
+  const shown = sortedEntries().filter((e) => !filter || involves(e, filter));
   $("emptyState").hidden = shown.length > 0;
   if (!shown.length) return;
 
   let currentDay = null;
   let group = null;
   for (const e of shown) {
-    const label = dayLabel(e.ts);
-    if (label !== currentDay) {
-      currentDay = label;
+    if (e.date !== currentDay) {
+      currentDay = e.date;
       group = document.createElement("div");
       group.className = "daygroup";
       const h = document.createElement("p");
       h.className = "daylabel";
-      h.textContent = label;
+      h.textContent = dayLabel(e.date);
       group.append(h);
       list.append(group);
     }
     group.append(entryCard(e));
   }
+}
+
+function yourImpact(e) {
+  if (!me) return { tone: "none", text: "" };
+  if (e.type === "settlement") {
+    if (e.from === me) return { tone: "plus", text: `you paid ${money(e.amountPaise)}` };
+    if (e.to === me) return { tone: "minus", text: `you received ${money(e.amountPaise)}` };
+    return { tone: "none", text: "not involved" };
+  }
+  const put = (e.payersPaise || {})[me] || 0;
+  const owes = (e.sharesPaise || {})[me] || 0;
+  const diff = put - owes;
+  if (!put && !owes) return { tone: "none", text: "not involved" };
+  if (diff > 0) return { tone: "plus", text: `you lent ${money(diff)}` };
+  if (diff < 0) return { tone: "minus", text: `you owe ${money(-diff)}` };
+  return { tone: "none", text: "square on this" };
 }
 
 function entryCard(e) {
@@ -306,8 +555,7 @@ function entryCard(e) {
     meta.textContent = `Settling up · logged by ${e.addedBy}`;
   } else {
     desc.textContent = e.desc;
-    const n = (e.participants || []).length;
-    meta.textContent = `${e.paidBy} paid · split ${n === PEOPLE.length ? "between everyone" : `${n} way${n === 1 ? "" : "s"}`}`;
+    meta.textContent = `${payerLabel(e)} · ${splitLabel(e)}`;
   }
   body.append(desc, meta);
 
@@ -329,27 +577,8 @@ function entryCard(e) {
     renderEntries();
   };
   wrap.append(main);
-
   if (openEntryId === e.id) wrap.append(entryDetail(e));
   return wrap;
-}
-
-function yourImpact(e) {
-  if (!me) return { tone: "none", text: "" };
-  if (e.type === "settlement") {
-    if (e.from === me) return { tone: "plus", text: `you paid ${money(e.amountPaise)}` };
-    if (e.to === me) return { tone: "minus", text: `you received ${money(e.amountPaise)}` };
-    return { tone: "none", text: "not involved" };
-  }
-  const share = (e.sharesPaise || {})[me] || 0;
-  if (e.paidBy === me) {
-    const lent = e.amountPaise - share;
-    return lent > 0
-      ? { tone: "plus", text: `you lent ${money(lent)}` }
-      : { tone: "none", text: "just you" };
-  }
-  if (share > 0) return { tone: "minus", text: `you owe ${money(share)}` };
-  return { tone: "none", text: "not involved" };
 }
 
 function entryDetail(e) {
@@ -357,33 +586,65 @@ function entryDetail(e) {
   box.className = "entry-detail";
 
   if (e.type !== "settlement") {
-    const grid = document.createElement("div");
-    grid.className = "split-grid";
-    for (const p of PEOPLE) {
-      const share = (e.sharesPaise || {})[p];
-      if (share === undefined) continue;
-      const item = document.createElement("div");
-      item.className = "split-item" + (p === e.paidBy ? " is-payer" : "");
-      const a = document.createElement("span");
-      a.textContent = p === e.paidBy ? `${p} (paid)` : p;
-      const b = document.createElement("span");
-      b.textContent = money(share);
-      item.append(a, b);
-      grid.append(item);
+    const pn = payerNames(e);
+    if (pn.length > 1) {
+      const head = document.createElement("p");
+      head.className = "detail-head";
+      head.textContent = "Put in";
+      const grid = document.createElement("div");
+      grid.className = "split-grid";
+      for (const p of pn) {
+        const item = document.createElement("div");
+        item.className = "split-item is-payer";
+        const a = document.createElement("span");
+        a.textContent = p;
+        const b = document.createElement("span");
+        b.textContent = money(e.payersPaise[p]);
+        item.append(a, b);
+        grid.append(item);
+      }
+      box.append(head, grid);
     }
-    box.append(grid);
+
+    const head2 = document.createElement("p");
+    head2.className = "detail-head";
+    head2.textContent = "Owes";
+    const grid2 = document.createElement("div");
+    grid2.className = "split-grid";
+    for (const p of PEOPLE) {
+      const s = (e.sharesPaise || {})[p];
+      if (s === undefined) continue;
+      const item = document.createElement("div");
+      item.className = "split-item" + (pn.includes(p) ? " is-payer" : "");
+      const a = document.createElement("span");
+      a.textContent = pn.includes(p) ? `${p} (paid)` : p;
+      const b = document.createElement("span");
+      b.textContent = money(s);
+      item.append(a, b);
+      grid2.append(item);
+    }
+    box.append(head2, grid2);
+  }
+
+  if (e.note) {
+    const n = document.createElement("p");
+    n.className = "detail-note";
+    n.textContent = e.note;
+    box.append(n);
   }
 
   const foot = document.createElement("div");
   foot.className = "entry-foot";
   const when = document.createElement("span");
-  const d = new Date(e.ts);
-  when.textContent = `${(CAT[e.category] || { label: "Payment" }).label} · ${d.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })} · added by ${e.addedBy}`;
+  const added = new Date(e.ts).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const bits = [e.type === "settlement" ? "Payment" : (CAT[e.category] || CAT.other).label, `added by ${e.addedBy} on ${added}`];
+  if (e.editedBy) bits.push(`edited by ${e.editedBy}`);
+  when.textContent = bits.join(" · ");
   foot.append(when);
 
+  const actions = document.createElement("div");
+  actions.className = "confirm";
   if (pendingDelete === e.id) {
-    const c = document.createElement("div");
-    c.className = "confirm";
     const q = document.createElement("span");
     q.className = "confirm-q";
     q.textContent = "Delete for everyone?";
@@ -391,41 +652,49 @@ function entryDetail(e) {
     yes.type = "button";
     yes.className = "btn btn-danger btn-xs";
     yes.textContent = "Delete";
-    yes.onclick = async () => { pendingDelete = null; await store.remove(e.id); };
+    yes.onclick = async () => { pendingDelete = null; if (editingId === e.id) resetForm(); await store.remove(e.id); };
     const no = document.createElement("button");
     no.type = "button";
     no.className = "btn btn-ghost btn-xs";
     no.textContent = "Keep";
     no.onclick = () => { pendingDelete = null; renderEntries(); };
-    c.append(q, yes, no);
-    foot.append(c);
+    actions.append(q, yes, no);
   } else {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "btn btn-ghost btn-xs";
+    edit.textContent = "Edit";
+    edit.onclick = () => loadForEdit(e);
     const del = document.createElement("button");
     del.type = "button";
     del.className = "btn btn-ghost btn-xs";
     del.textContent = "Delete";
     del.onclick = () => { pendingDelete = e.id; renderEntries(); };
-    foot.append(del);
+    actions.append(edit, del);
   }
-
+  foot.append(actions);
   box.append(foot);
   return box;
 }
 
-function renderBalances() {
-  const net = computeNet(entries);
+/* ── Balances ──────────────────────────────────────────────── */
+function renderBalances(L) {
   const list = $("balanceList");
   list.innerHTML = "";
-
-  const max = Math.max(1, ...Object.values(net).map((v) => Math.abs(v)));
-  const sorted = [...PEOPLE].sort((a, b) => net[b] - net[a]);
+  const max = Math.max(1, ...PEOPLE.map((p) => Math.abs(L.net[p])));
+  const sorted = [...PEOPLE].sort((a, b) => L.net[b] - L.net[a] || a.localeCompare(b));
 
   for (const p of sorted) {
-    const v = net[p];
+    const v = L.net[p];
     const row = document.createElement("div");
     row.className = "bal";
 
-    const name = document.createElement("div");
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "bal-head";
+    head.onclick = () => { openPerson = openPerson === p ? null : p; renderAll(); };
+
+    const name = document.createElement("span");
     name.className = "bal-name";
     name.textContent = p;
     if (p === me) {
@@ -434,34 +703,69 @@ function renderBalances() {
       tag.textContent = "you";
       name.append(tag);
     }
-
-    const amt = document.createElement("div");
+    const amt = document.createElement("span");
     amt.className = "bal-amt " + (v > 0 ? "plus" : v < 0 ? "minus" : "zero");
     amt.textContent = v === 0 ? "settled" : money(v, { sign: true });
+    head.append(name, amt);
 
     const bar = document.createElement("div");
     bar.className = "bal-bar";
     const fill = document.createElement("i");
-    const pct = (Math.abs(v) / max) * 50;
+    fill.style.width = `${(Math.abs(v) / max) * 50}%`;
     if (v >= 0) { fill.style.left = "50%"; fill.style.background = "var(--plus)"; }
     else { fill.style.right = "50%"; fill.style.background = "var(--minus)"; }
-    fill.style.width = `${pct}%`;
     bar.append(fill);
 
     const note = document.createElement("div");
     note.className = "bal-note";
-    note.textContent = v > 0 ? `gets back ${money(v)}` : v < 0 ? `owes ${money(-v)}` : "all square";
+    note.textContent = `paid ${money(L.paid[p])} · share ${money(L.share[p])}`
+      + (L.settledOut[p] ? ` · settled out ${money(L.settledOut[p])}` : "")
+      + (L.settledIn[p] ? ` · received ${money(L.settledIn[p])}` : "");
 
-    row.append(name, amt, bar, note);
+    row.append(head, bar, note);
+
+    if (openPerson === p) {
+      const detail = document.createElement("div");
+      detail.className = "bal-detail";
+      const lines = [];
+      for (const other of PEOPLE) {
+        if (L.pair[p][other] > 0) lines.push({ text: `owes ${other}`, amt: L.pair[p][other], tone: "minus" });
+        if (L.pair[other][p] > 0) lines.push({ text: `gets back from ${other}`, amt: L.pair[other][p], tone: "plus" });
+      }
+      if (!lines.length) {
+        const q = document.createElement("p");
+        q.className = "bal-quiet";
+        q.textContent = "Square with everyone.";
+        detail.append(q);
+      }
+      for (const l of lines.sort((a, b) => b.amt - a.amt)) {
+        const d = document.createElement("div");
+        d.className = "bal-line";
+        const t = document.createElement("span");
+        t.textContent = l.text;
+        const v2 = document.createElement("span");
+        v2.className = l.tone;
+        v2.textContent = money(l.amt);
+        d.append(t, v2);
+        detail.append(d);
+      }
+      row.append(detail);
+    }
     list.append(row);
   }
+
+  const sum = PEOPLE.reduce((a, p) => a + L.net[p], 0);
+  $("balanceCheck").textContent = sum === 0
+    ? "All 13 balances add up to exactly ₹0 — the books are consistent."
+    : `Balances are off by ${money(sum)} — please tell Karan.`;
+  $("balanceCheck").className = "check " + (sum === 0 ? "is-ok" : "is-off");
 
   // Category breakdown
   const totals = {};
   let grand = 0;
   for (const e of entries) {
     if (e.type === "settlement") continue;
-    const c = e.category || "other";
+    const c = CAT[e.category] ? e.category : "other";
     totals[c] = (totals[c] || 0) + e.amountPaise;
     grand += e.amountPaise;
   }
@@ -470,8 +774,7 @@ function renderBalances() {
   const rows = CATEGORIES.filter((c) => totals[c.id]).sort((a, b) => totals[b.id] - totals[a.id]);
   if (!rows.length) {
     const p = document.createElement("p");
-    p.className = "card-sub";
-    p.style.marginTop = "0";
+    p.className = "bal-quiet";
     p.textContent = "Nothing to break down yet.";
     bd.append(p);
   }
@@ -494,11 +797,15 @@ function renderBalances() {
   }
 }
 
-function renderSettle() {
-  const net = computeNet(entries);
-  const transfers = minTransfers(net);
+/* ── Settle up ─────────────────────────────────────────────── */
+function renderSettle(L) {
   const box = $("settleList");
   box.innerHTML = "";
+  const transfers = settleView === "simple" ? minTransfers(L.net) : directTransfers(L.pair);
+
+  $("settleSub").textContent = settleView === "simple"
+    ? "Make these transfers and every balance lands at zero. Fewest possible payments, so money may move between people who never shared an expense."
+    : "Exactly who owes whom, straight from the expenses. More payments, but each one traces to something real.";
 
   if (!transfers.length) {
     const p = document.createElement("p");
@@ -514,7 +821,13 @@ function renderSettle() {
 
     const text = document.createElement("div");
     text.className = "settle-text";
-    text.innerHTML = `<strong>${t.from === me ? "You" : t.from}</strong> → <strong>${t.to === me ? "you" : t.to}</strong>`;
+    const from = document.createElement("strong");
+    from.textContent = t.from === me ? "You" : t.from;
+    const arrow = document.createElement("span");
+    arrow.textContent = " → ";
+    const to = document.createElement("strong");
+    to.textContent = t.to === me ? "you" : t.to;
+    text.append(from, arrow, to);
 
     const amt = document.createElement("span");
     amt.className = "settle-amt";
@@ -529,11 +842,8 @@ function renderSettle() {
       btn.textContent = "Saving…";
       try {
         await store.add({
-          type: "settlement",
-          from: t.from, to: t.to,
-          amountPaise: t.amount,
-          addedBy: me,
-          ts: Date.now(),
+          type: "settlement", from: t.from, to: t.to, amountPaise: t.amount,
+          date: new Date().toLocaleDateString("en-CA"), addedBy: me, ts: Date.now(),
         });
       } catch (err) {
         btn.disabled = false;
@@ -547,19 +857,15 @@ function renderSettle() {
   }
 }
 
-function renderSummary() {
-  const net = computeNet(entries);
+/* ── Summary & shell ───────────────────────────────────────── */
+function renderSummary(L) {
   let total = 0;
-  let yourShare = 0;
-  for (const e of entries) {
-    if (e.type === "settlement") continue;
-    total += e.amountPaise;
-    yourShare += (e.sharesPaise || {})[me] || 0;
-  }
+  for (const e of entries) if (e.type !== "settlement") total += e.amountPaise;
   $("sumTotal").textContent = money(total);
-  $("sumYourShare").textContent = money(yourShare);
+  $("sumYouPaid").textContent = money(L.paid[me] || 0);
+  $("sumYourShare").textContent = money(L.share[me] || 0);
 
-  const v = net[me] || 0;
+  const v = L.net[me] || 0;
   const el = $("sumNet");
   el.textContent = v === 0 ? "settled" : money(Math.abs(v));
   el.className = "summary-value " + (v > 0 ? "plus" : v < 0 ? "minus" : "");
@@ -570,29 +876,18 @@ function renderSummary() {
 }
 
 function renderAll() {
-  renderSummary();
+  const L = buildLedger(entries);
+  renderSummary(L);
   renderEntries();
-  renderBalances();
-  renderSettle();
-}
-
-/* ── Form ──────────────────────────────────────────────────── */
-function setSettleMode(on) {
-  settleMode = on;
-  $("settleBox").hidden = !on;
-  $("submitBtn").textContent = on ? "Record payment" : "Add expense";
-  $("settleToggle").textContent = on ? "Back to adding an expense" : "Record a payment instead";
-  for (const id of ["desc", "paidBy", "splitMode"]) $(id).closest(".field").hidden = on;
-  $("catRow").closest(".field").hidden = on;
-  $("partRow").closest(".field").hidden = on;
-  $("desc").required = !on;
-  renderExact();
+  renderBalances(L);
+  renderSettle(L);
 }
 
 function showError(msg) {
   const el = $("formError");
   el.hidden = !msg;
   el.textContent = msg || "";
+  if (msg) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function showStatus(msg, isError = false) {
@@ -602,85 +897,17 @@ function showStatus(msg, isError = false) {
   el.textContent = msg || "";
 }
 
-async function onSubmit(ev) {
-  ev.preventDefault();
-  showError("");
-
-  const amountPaise = parseRupees($("amount").value);
-  if (!amountPaise || amountPaise <= 0 || isNaN(amountPaise)) {
-    showError("Enter an amount greater than zero.");
-    return;
-  }
-
-  let entry;
-  if (settleMode) {
-    const from = $("payFrom").value;
-    const to = $("payTo").value;
-    if (from === to) { showError("Pick two different people for a payment."); return; }
-    entry = { type: "settlement", from, to, amountPaise, addedBy: me, ts: Date.now() };
-  } else {
-    const desc = $("desc").value.trim();
-    if (!desc) { showError("Add a short description."); return; }
-    const names = PEOPLE.filter((p) => participants.has(p));
-    if (!names.length) { showError("Pick at least one person to split this between."); return; }
-
-    let shares;
-    if ($("splitMode").value === "exact") {
-      const read = readExact();
-      if (read.bad) { showError(`That is not a number for ${read.bad}.`); return; }
-      if (read.sum !== amountPaise) {
-        showError(`Shares add up to ${money(read.sum)}, but the expense is ${money(amountPaise)}.`);
-        return;
-      }
-      shares = Object.fromEntries(Object.entries(read.shares).filter(([, v]) => v > 0));
-      if (!Object.keys(shares).length) { showError("Give at least one person a share."); return; }
-    } else {
-      shares = equalShares(amountPaise, names);
-    }
-
-    entry = {
-      type: "expense",
-      desc,
-      category: selectedCat,
-      amountPaise,
-      paidBy: $("paidBy").value,
-      participants: Object.keys(shares),
-      sharesPaise: shares,
-      addedBy: me,
-      ts: Date.now(),
-    };
-  }
-
-  const btn = $("submitBtn");
-  btn.disabled = true;
-  const label = btn.textContent;
-  btn.textContent = "Saving…";
-  try {
-    await store.add(entry);
-    $("amount").value = "";
-    $("desc").value = "";
-    $("exactRows").querySelectorAll("input").forEach((i) => { i.value = ""; });
-    updateExactSum();
-    if (settleMode) setSettleMode(false);
-  } catch (err) {
-    showError(`Could not save: ${err.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-  }
-}
-
 /* ── CSV ───────────────────────────────────────────────────── */
 function exportCsv() {
   const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
-  const head = ["Date", "Type", "Description", "Category", "Amount (INR)", "Paid by", "Split between", "Per person", "Added by"];
-  const rows = entries.map((e) => {
-    const when = new Date(e.ts).toLocaleString("en-IN");
+  const head = ["Date", "Type", "Description", "Category", "Amount (INR)", "Split method", "Paid by", "Owed by", "Note", "Added by"];
+  const rows = sortedEntries().map((e) => {
     if (e.type === "settlement") {
-      return [when, "Payment", `${e.from} paid ${e.to}`, "", (e.amountPaise / 100).toFixed(2), e.from, e.to, "", e.addedBy];
+      return [e.date, "Payment", `${e.from} paid ${e.to}`, "", (e.amountPaise / 100).toFixed(2), "", `${e.from}: ${(e.amountPaise / 100).toFixed(2)}`, `${e.to}: ${(e.amountPaise / 100).toFixed(2)}`, e.note || "", e.addedBy];
     }
-    const shares = Object.entries(e.sharesPaise || {}).map(([n, v]) => `${n}: ${(v / 100).toFixed(2)}`).join("; ");
-    return [when, "Expense", e.desc, (CAT[e.category] || CAT.other).label, (e.amountPaise / 100).toFixed(2), e.paidBy, (e.participants || []).join("; "), shares, e.addedBy];
+    const pay = Object.entries(e.payersPaise || {}).map(([n, v]) => `${n}: ${(v / 100).toFixed(2)}`).join("; ");
+    const owe = Object.entries(e.sharesPaise || {}).map(([n, v]) => `${n}: ${(v / 100).toFixed(2)}`).join("; ");
+    return [e.date, "Expense", e.desc, (CAT[e.category] || CAT.other).label, (e.amountPaise / 100).toFixed(2), e.splitMethod, pay, owe, e.note || "", e.addedBy];
   });
   const csv = [head, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
@@ -694,26 +921,37 @@ function exportCsv() {
 }
 
 /* ── Boot ──────────────────────────────────────────────────── */
+function fillSelect(el, names, placeholder) {
+  el.innerHTML = "";
+  if (placeholder) el.append(new Option(placeholder, ""));
+  for (const n of names) el.append(new Option(n, n));
+}
+
 function setMe(name) {
   me = name;
   try { localStorage.setItem(LS_NAME, name); } catch { /* private mode */ }
   $("whoSelect").value = name;
-  $("paidBy").value = name;
-  $("payFrom").value = name;
-  const other = PEOPLE.find((p) => p !== name);
-  if ($("payTo").value === name) $("payTo").value = other;
-  renderChips();
+  if (!editingId) {
+    $("paidBy").value = name;
+    $("payFrom").value = name;
+    if ($("payTo").value === name) $("payTo").value = PEOPLE.find((p) => p !== name);
+    payers = new Set([name]);
+  }
+  renderCats();
+  renderParticipantChips();
+  renderPayerRows();
   renderAll();
 }
 
 function wireUi() {
-  fillSelect($("gateSelect"), PEOPLE, { placeholder: "Select your name…" });
+  fillSelect($("gateSelect"), PEOPLE, "Select your name…");
   fillSelect($("whoSelect"), PEOPLE);
   fillSelect($("paidBy"), PEOPLE);
   fillSelect($("payFrom"), PEOPLE);
   fillSelect($("payTo"), PEOPLE);
-  fillSelect($("filterPerson"), PEOPLE, { placeholder: "Everyone" });
+  fillSelect($("filterPerson"), PEOPLE, "Everyone");
   $("payTo").value = PEOPLE[1];
+  $("date").value = new Date().toLocaleDateString("en-CA");
 
   $("gateSelect").onchange = (e) => { $("gateGo").disabled = !e.target.value; };
   $("gateGo").onclick = () => {
@@ -723,7 +961,6 @@ function wireUi() {
     $("app").hidden = false;
     setMe(name);
   };
-
   $("whoSelect").onchange = (e) => setMe(e.target.value);
 
   for (const tab of document.querySelectorAll(".tab")) {
@@ -733,26 +970,35 @@ function wireUi() {
         t.classList.toggle("is-active", on);
         t.setAttribute("aria-selected", String(on));
       }
-      for (const v of ["expenses", "balances", "settle"]) {
-        $(`view-${v}`).hidden = v !== tab.dataset.tab;
-      }
+      for (const v of ["expenses", "balances", "settle"]) $(`view-${v}`).hidden = v !== tab.dataset.tab;
     };
   }
 
+  for (const btn of document.querySelectorAll("[data-payers]")) {
+    btn.onclick = () => setPayerMode(btn.dataset.payers);
+  }
+  for (const btn of document.querySelectorAll("[data-settle]")) {
+    btn.onclick = () => {
+      settleView = btn.dataset.settle;
+      for (const b of document.querySelectorAll("[data-settle]")) b.classList.toggle("is-on", b === btn);
+      renderAll();
+    };
+  }
   for (const btn of document.querySelectorAll("[data-select]")) {
     btn.onclick = () => {
       const kind = btn.dataset.select;
       if (kind === "all") participants = new Set(PEOPLE);
       else if (kind === "none") participants = new Set();
       else participants = new Set(me ? [me] : []);
-      renderChips();
-      renderExact();
+      renderParticipantChips();
+      renderSplitRows();
     };
   }
 
-  $("splitMode").onchange = renderExact;
-  $("amount").addEventListener("input", updateExactSum);
-  $("settleToggle").onclick = () => setSettleMode(!settleMode);
+  $("splitMode").onchange = renderSplitRows;
+  $("amount").addEventListener("input", updatePreview);
+  $("settleToggle").onclick = () => { if (editingId) resetForm(); setSettleMode(!settleMode); };
+  $("cancelEdit").onclick = () => { const was = settleMode; resetForm(); if (was) setSettleMode(false); };
   $("expenseForm").addEventListener("submit", onSubmit);
   $("filterPerson").onchange = renderEntries;
   $("exportBtn").onclick = exportCsv;
@@ -769,15 +1015,13 @@ async function start() {
     $("gate").hidden = false;
   }
 
-  const hasFirebase = cfg.firebase && cfg.firebase.projectId;
-  if (hasFirebase) {
+  const onData = (list) => { entries = list.map(normalize); renderAll(); };
+
+  if (cfg.firebase && cfg.firebase.projectId) {
     try {
       store = await firebaseStore();
       $("syncNote").textContent = `Live · everyone on this link shares one register (trip: ${TRIP_ID})`;
-      store.subscribe(
-        (list) => { entries = list; renderAll(); },
-        (err) => showStatus(`Lost the live connection: ${err.message}. Check the Firestore rules.`, true),
-      );
+      store.subscribe(onData, (err) => showStatus(`Lost the live connection: ${err.message}`, true));
       return;
     } catch (err) {
       showStatus(`Could not reach Firebase (${err.message}) — running on this device only.`, true);
@@ -788,7 +1032,7 @@ async function start() {
 
   store = localStore();
   $("syncNote").textContent = "Local mode · saved in this browser only";
-  store.subscribe((list) => { entries = list; renderAll(); });
+  store.subscribe(onData);
 }
 
 start();
