@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers,
-} from "./ledger.js?v=7";
+} from "./ledger.js?v=8";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -707,8 +707,11 @@ function renderBin() {
 }
 
 /* ── Entry list ────────────────────────────────────────────── */
+/** Everything on screen and every figure must ignore what is in the bin. */
+function liveEntries() { return entries.filter((e) => !e.deleted); }
+
 function sortedEntries() {
-  return entries.filter((e) => !e.deleted).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts));
+  return liveEntries().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts));
 }
 
 function dayLabel(dateStr) {
@@ -1014,7 +1017,7 @@ function renderBalances(L) {
   // Category breakdown
   const totals = {};
   let grand = 0;
-  for (const e of entries) {
+  for (const e of liveEntries()) {
     if (e.type === "settlement") continue;
     const c = CAT[e.category] ? e.category : "other";
     totals[c] = (totals[c] || 0) + e.amountPaise;
@@ -1172,7 +1175,7 @@ function renderSettle(L) {
   if (!transfers.length) {
     const p = document.createElement("p");
     p.className = "all-clear";
-    p.textContent = entries.length ? "Everyone is square. Nothing to pay." : "No expenses yet.";
+    p.textContent = liveEntries().length ? "Everyone is square. Nothing to pay." : "No expenses yet.";
     box.append(p);
     return;
   }
@@ -1249,7 +1252,8 @@ function renderSettle(L) {
 /* ── Summary & shell ───────────────────────────────────────── */
 function renderSummary(L) {
   let total = 0;
-  for (const e of entries) if (e.type !== "settlement") total += e.amountPaise;
+  const live = liveEntries();
+  for (const e of live) if (e.type !== "settlement") total += e.amountPaise;
   $("sumTotal").textContent = money(total);
   $("sumYouPaid").textContent = money(L.paid[me] || 0);
   $("sumYourShare").textContent = money(L.share[me] || 0);
@@ -1260,7 +1264,7 @@ function renderSummary(L) {
   el.className = "summary-value " + (v > 0 ? "plus" : v < 0 ? "minus" : "");
   $("sumNetLabel").textContent = v > 0 ? "You get back" : v < 0 ? "You owe" : "Your balance";
 
-  const count = entries.filter((e) => e.type !== "settlement").length;
+  const count = live.filter((e) => e.type !== "settlement").length;
   $("tripSub").textContent = `${PEOPLE.length} people · ${count} expense${count === 1 ? "" : "s"}`;
 }
 
