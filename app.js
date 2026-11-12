@@ -1,4 +1,4 @@
-/* Goa Register — shared trip expense ledger.
+/* Goa Hisaab — shared trip expense ledger.
 
    Money is integer paise everywhere; rupees exist only at the edges (parsing
    input, printing). Every division uses largest-remainder allocation, so the
@@ -14,7 +14,7 @@ import {
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
   buildLedger, minTransfers, directTransfers, householdLedger, facesFor,
-} from "./ledger.js?v=9";
+} from "./ledger.js?v=10";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};

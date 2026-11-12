@@ -1,0 +1,14 @@
+{
+  "name": "Goa Hisaab",
+  "short_name": "Hisaab",
+  "description": "Shared expense register for the Goa trip.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080F17",
+  "theme_color": "#121E2B",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

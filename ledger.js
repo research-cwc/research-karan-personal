@@ -1,4 +1,4 @@
-/* Ledger maths for the Goa Register — pure functions, no DOM.
+/* Ledger maths for Goa Hisaab — pure functions, no DOM.
    Kept separate so it can be run and tested outside the browser.
 
    Money is integer paise everywhere. Every division uses largest-remainder

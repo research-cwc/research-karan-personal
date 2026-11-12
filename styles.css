@@ -1,4 +1,4 @@
-/* Goa Register
+/* Goa Hisaab
    Layout: one narrow column. A sticky header carries the four numbers that
    matter; everything else scrolls under it. Palette borrows from Portuguese
    azulejo tile — deep blue on warm paper — with laterite red for debts and a
@@ -39,6 +39,7 @@
   --font-display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
   --font-body:    "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
 
+  --amt-w: 92px;          /* the per-person amount boxes; the rest pill tracks it */
   --gutter:   max(18px, env(safe-area-inset-left, 0px));
   --gutter-r: max(18px, env(safe-area-inset-right, 0px));
   --col: 780px;
@@ -87,6 +88,10 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+html {
+  -webkit-text-size-adjust: 100%;   /* Safari otherwise inflates text in landscape */
+  text-size-adjust: 100%;
+}
 
 body {
   margin: 0;
@@ -96,6 +101,7 @@ body {
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -107,6 +113,7 @@ h1, h2, h3 {
 }
 p { margin: 0; }
 button, input, select { font: inherit; color: inherit; }
+button { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
 [hidden] { display: none !important; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 5px; }
@@ -275,7 +282,11 @@ body::before {
   transition: border-color .12s ease, background .12s ease;
 }
 .input::placeholder { color: var(--ink-soft); opacity: .75; }
-.select { appearance: none; cursor: pointer; padding-right: 30px; }
+.select {
+  appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%236F869C' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 8px;
+}
 .select-lg { padding: 14px 13px; font-size: 16px; }
 .select-sm { padding: 7px 10px; font-size: 13px; width: auto; }
 .input:hover, .select:hover { border-color: var(--ink-soft); }
@@ -387,7 +398,7 @@ body::before {
 .unit-wrap { position: relative; display: flex; align-items: center; flex: none; }
 .unit { position: absolute; left: 9px; font-size: 12px; color: var(--ink-soft); pointer-events: none; }
 .amount-row input, .unit-wrap input {
-  width: 92px; flex: none; padding: 8px 10px 8px 22px; font-size: 14px; text-align: right;
+  width: var(--amt-w); flex: none; padding: 8px 10px 8px 22px; font-size: 14px; text-align: right;
   font-variant-numeric: tabular-nums;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm);
 }
@@ -398,7 +409,7 @@ body::before {
 /* Only offered while you are typing in that box — it drops the unassigned
    remainder in, so the last person never does the subtraction by hand. */
 .rest-btn {
-  position: absolute; right: 104px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: calc(var(--amt-w) + 12px); top: 50%; transform: translateY(-50%);
   appearance: none; cursor: pointer; z-index: 2;
   background: var(--accent); color: var(--accent-ink); border: 0;
   border-radius: 7px; padding: 4px 8px;
@@ -605,3 +616,43 @@ body::before {
   font-size: 11.5px; color: var(--ink-soft); font-weight: 500;
 }
 .seg { flex-wrap: wrap; }
+
+/* ── Touch devices ─────────────────────────────────────────────
+   Safari zooms the whole page when a field smaller than 16px takes focus, so
+   every control that accepts typing is 16px here. Targets are sized to Apple's
+   44px so a thumb cannot catch Delete instead of Edit. */
+@media (pointer: coarse) {
+  :root { --amt-w: 104px; }
+
+  .input, .select, .select-sm, .amount-row input, .unit-wrap input,
+  .input-amount, .roster-add .input { font-size: 16px; }
+
+  .input, .select { padding-block: 13px; }
+  .select-sm { padding: 10px 32px 10px 12px; }
+  .input-amount { font-size: 26px; }
+
+  .btn { min-height: 44px; padding-inline: 18px; }
+  .btn-sm { min-height: 44px; padding-inline: 16px; }
+  .btn-xs { min-height: 40px; padding-inline: 14px; font-size: 13px; }
+  .seg-btn { min-height: 40px; padding-inline: 16px; }
+  .chip { min-height: 42px; padding-inline: 16px; font-size: 14.5px; }
+  .tab { padding-block: 16px 13px; font-size: 15.5px; }
+  .row-toggle { min-height: 44px; }
+  .amount-row input, .unit-wrap input { min-height: 44px; }
+  .bal-head { min-height: 44px; }
+  .bin-summary { min-height: 48px; }
+  .entry-main { padding-block: 16px; }
+
+  /* Deleting is the one that must not be caught by a stray thumb. */
+  .entry-foot { gap: 14px; }
+  .confirm { gap: 12px; }
+
+  .amount-rows { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .rest-btn { min-height: 34px; padding-inline: 12px; font-size: 13px; }
+}
+
+/* Home Screen on an iPhone: no Safari chrome, so the page owns the whole
+   screen and the status bar sits over the top inset. */
+@media (display-mode: standalone) {
+  body { overscroll-behavior-y: none; }
+}

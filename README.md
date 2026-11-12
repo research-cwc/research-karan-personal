@@ -1,4 +1,4 @@
-# Goa Register
+# Goa Hisaab
 
 A shared expense register for a 13-person trip — open the link, pick your name,
 log what you spent and who it was for. Everyone sees the same ledger live.
@@ -224,6 +224,24 @@ so in as many words, rather than offering an undo it cannot honour.
   logins. That was the point.
 - **Two people editing one entry**: the later save wins, silently.
 
+## On an iPhone
+
+Everyone on this trip is on iOS, so the page is tuned for it rather than merely
+working there.
+
+- **Every field is 16px on a touch device.** Safari zooms the whole page when a
+  smaller field takes focus, which it then will not undo — the single most
+  irritating thing about a web form on an iPhone.
+- **Targets are Apple's 44px**, and Edit sits well clear of Delete, because a
+  thumb catching the wrong one here costs real money.
+- **Add to Home Screen** gives it an icon, its own name, and no Safari chrome.
+  The status bar then sits over the page, which is why every edge is padded
+  from `env(safe-area-inset-*)` rather than a fixed number — it also keeps the
+  content clear of the notch in landscape.
+- Amount fields raise the number pad, the tap highlight and double-tap zoom are
+  gone, text does not inflate in landscape, and selects now carry a chevron so
+  they read as something you can tap.
+
 ## Deploys and stale caches
 
 `index.html` loads `styles.css`, `app.js` and `firebase-config.js` with a `?v=`
@@ -248,6 +266,8 @@ tested by serving a stripped page against the current script.
 | `firebase-config.js` | Project keys and trip id |
 | `tests/ledger.test.mjs` | The maths tests |
 | `goa-crew.jpg` | The group photo on the welcome screen |
+| `apple-touch-icon.png`, `icon-*.png` | Home Screen icons |
+| `manifest.webmanifest` | Name and icons when installed |
 | `robots.txt` | Asks search engines not to index the site |
 
 ## Changing the people
