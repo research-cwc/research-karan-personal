@@ -13,8 +13,8 @@ import {
   DEFAULT_PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
   money, parseRupees, parseNumber, computeShares,
   normalize, payerNames, shareNames, involves, peopleInEntries,
-  buildLedger, minTransfers, directTransfers,
-} from "./ledger.js?v=8";
+  buildLedger, minTransfers, directTransfers, householdLedger, facesFor,
+} from "./ledger.js?v=9";
 
 const LS_NAME = "goa.me";
 const cfg = window.GOA_CONFIG || {};
@@ -39,7 +39,8 @@ let pendingDelete = null;
 let pendingSettle = null;
 let pendingPurge = null;
 let lastDeleted = null;
-let settleView = "simple";
+let settleView = "family";
+let balView = "family";
 
 const MAX_PAISE = 100000000;          // Rs 10,00,000 — matches the security rules
 const MIN_DATE = "2024-01-01";
@@ -934,6 +935,13 @@ function entryDetail(e) {
 function renderBalances(L) {
   const list = $("balanceList");
   list.innerHTML = "";
+  if ($("balanceSub")) {
+    $("balanceSub").textContent = balView === "family"
+      ? "Couples count as one wallet, so a spouse who is owed cancels a spouse who owes. Tap a name to open it up."
+      : "Every person on their own. Positive means the trip owes them. Tap a name to see who it is with.";
+  }
+  if (balView === "family") return renderFamilyBalances(L);
+
   const max = Math.max(1, ...L.people.map((p) => Math.abs(L.net[p])));
   const sorted = [...L.people].sort((a, b) => L.net[b] - L.net[a] || a.localeCompare(b));
 
@@ -1007,6 +1015,84 @@ function renderBalances(L) {
     list.append(row);
   }
 
+  renderCheckAndCategories(L);
+}
+
+function renderFamilyBalances(L) {
+  const list = $("balanceList");
+  const groups = householdLedger(L).sort((a, b) => b.net - a.net || a.label.localeCompare(b.label));
+  const max = Math.max(1, ...groups.map((g) => Math.abs(g.net)));
+
+  for (const g of groups) {
+    const row = document.createElement("div");
+    row.className = "bal";
+
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "bal-head";
+    head.onclick = () => { openPerson = openPerson === g.key ? null : g.key; renderAll(); };
+
+    const name = document.createElement("span");
+    name.className = "bal-name";
+    name.textContent = g.label;
+    if (me && g.members.includes(me)) {
+      const tag = document.createElement("span");
+      tag.className = "you-tag";
+      tag.textContent = "you";
+      name.append(tag);
+    }
+    const amt = document.createElement("span");
+    amt.className = "bal-amt " + (g.net > 0 ? "plus" : g.net < 0 ? "minus" : "zero");
+    amt.textContent = g.net === 0 ? "settled" : money(g.net, { sign: true });
+    head.append(name, amt);
+
+    const bar = document.createElement("div");
+    bar.className = "bal-bar";
+    const fill = document.createElement("i");
+    fill.style.width = `${(Math.abs(g.net) / max) * 50}%`;
+    if (g.net >= 0) { fill.style.left = "50%"; fill.style.background = "var(--plus)"; }
+    else { fill.style.right = "50%"; fill.style.background = "var(--minus)"; }
+    bar.append(fill);
+
+    const note = document.createElement("div");
+    note.className = "bal-note";
+    note.textContent = g.couple
+      ? `${g.members.map((n) => `${n} ${money(L.net[n] || 0, { sign: true })}`).join(" · ")}`
+      : `paid ${money(g.paid)} · share ${money(g.share)}`;
+
+    row.append(head, bar, note);
+
+    if (openPerson === g.key) {
+      const detail = document.createElement("div");
+      detail.className = "bal-detail";
+      for (const n of g.members) {
+        const d = document.createElement("div");
+        d.className = "bal-line";
+        const t = document.createElement("span");
+        t.textContent = `${n} — paid ${money(L.paid[n] || 0)}, share ${money(L.share[n] || 0)}`;
+        const v = document.createElement("span");
+        const own = L.net[n] || 0;
+        v.className = own > 0 ? "plus" : own < 0 ? "minus" : "";
+        v.textContent = own === 0 ? "settled" : money(own, { sign: true });
+        d.append(t, v);
+        detail.append(d);
+      }
+      if (g.inside.length) {
+        const note2 = document.createElement("p");
+        note2.className = "bal-quiet";
+        note2.textContent = g.inside
+          .map((t) => `${t.from} and ${t.to} square ${money(t.amount)} between themselves — no payment needed.`)
+          .join(" ");
+        detail.append(note2);
+      }
+      row.append(detail);
+    }
+    list.append(row);
+  }
+  renderCheckAndCategories(L);
+}
+
+function renderCheckAndCategories(L) {
   const sum = L.people.reduce((a, p) => a + L.net[p], 0);
   if (!$("balanceCheck")) return;
   $("balanceCheck").textContent = sum === 0
@@ -1163,14 +1249,42 @@ async function onAddPerson(ev) {
 }
 
 /* ── Settle up ─────────────────────────────────────────────── */
+/** The rows to settle, in whichever grouping is on screen. A family row still
+ *  names the two people the money will be recorded against, so nothing is
+ *  logged against a couple as if it were a person. */
+function settlementRows(L) {
+  if (settleView === "direct") {
+    return directTransfers(L.pair, L.people)
+      .map((t) => ({ ...t, fromLabel: t.from, toLabel: t.to, key: `d:${t.from}>${t.to}` }));
+  }
+  if (settleView === "simple") {
+    return minTransfers(L.net)
+      .map((t) => ({ ...t, fromLabel: t.from, toLabel: t.to, key: `p:${t.from}>${t.to}` }));
+  }
+  const groups = householdLedger(L);
+  const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+  return minTransfers(Object.fromEntries(groups.map((g) => [g.key, g.net]))).map((t) => {
+    const from = facesFor(byKey[t.from], L.net, true);
+    const to = facesFor(byKey[t.to], L.net, false);
+    return {
+      from, to, amount: t.amount,
+      fromLabel: byKey[t.from].label, toLabel: byKey[t.to].label,
+      fromCouple: byKey[t.from].couple, toCouple: byKey[t.to].couple,
+      key: `f:${t.from}>${t.to}`,
+    };
+  });
+}
+
 function renderSettle(L) {
   const box = $("settleList");
   box.innerHTML = "";
-  const transfers = settleView === "simple" ? minTransfers(L.net) : directTransfers(L.pair, L.people);
+  const transfers = settlementRows(L);
 
-  $("settleSub").textContent = settleView === "simple"
-    ? "Make these transfers and every balance lands at zero. Fewest possible payments, so money may move between people who never shared an expense."
-    : "Exactly who owes whom, straight from the expenses. More payments, but each one traces to something real.";
+  $("settleSub").textContent = {
+    family: "Each couple settles as one wallet, so a spouse who is owed cancels a spouse who owes. One payment per family.",
+    simple: "The smallest set of transfers that clears everyone individually. Money may move between people who never shared an expense.",
+    direct: "Exactly who owes whom, straight from the expenses. More payments, but each one traces to something real.",
+  }[settleView];
 
   if (!transfers.length) {
     const p = document.createElement("p");
@@ -1181,24 +1295,30 @@ function renderSettle(L) {
   }
 
   for (const t of transfers) {
+    const mine = t.from === me || t.to === me;
     const row = document.createElement("div");
-    row.className = "settle-row" + (t.from === me || t.to === me ? " is-yours" : "");
+    row.className = "settle-row" + (mine ? " is-yours" : "");
 
     const text = document.createElement("div");
     text.className = "settle-text";
     const from = document.createElement("strong");
-    from.textContent = t.from === me ? "You" : t.from;
+    from.textContent = t.fromLabel;
     const arrow = document.createElement("span");
     arrow.textContent = " → ";
     const to = document.createElement("strong");
-    to.textContent = t.to === me ? "you" : t.to;
+    to.textContent = t.toLabel;
     text.append(from, arrow, to);
+    if (settleView === "family" && (t.fromCouple || t.toCouple)) {
+      const who = document.createElement("span");
+      who.className = "settle-who";
+      who.textContent = `recorded as ${t.from} → ${t.to}`;
+      text.append(who);
+    }
 
     const amt = document.createElement("span");
     amt.className = "settle-amt";
     amt.textContent = money(t.amount);
 
-    const key = `${t.from}>${t.to}>${t.amount}`;
     const record = async (button) => {
       button.disabled = true;
       button.textContent = "Saving…";
@@ -1215,15 +1335,15 @@ function renderSettle(L) {
       }
     };
 
-    let btn;
-    if (pendingSettle === key) {
+    let action;
+    if (pendingSettle === t.key) {
       // Recording a payment that never happened is as damaging as missing one,
       // and two people tapping the same row would settle the debt twice.
       const wrap = document.createElement("div");
       wrap.className = "confirm";
       const q = document.createElement("span");
       q.className = "confirm-q";
-      q.textContent = "Has the money actually moved?";
+      q.textContent = `Has ${t.from} actually paid ${t.to} ${money(t.amount)}?`;
       const yes = document.createElement("button");
       yes.type = "button";
       yes.className = "btn btn-sm btn-primary";
@@ -1235,16 +1355,16 @@ function renderSettle(L) {
       no.textContent = "Not yet";
       no.onclick = () => { pendingSettle = null; renderAll(); };
       wrap.append(q, yes, no);
-      btn = wrap;
+      action = wrap;
     } else {
-      btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-sm";
-      btn.textContent = "Mark paid";
-      btn.onclick = () => { pendingSettle = key; renderAll(); };
+      action = document.createElement("button");
+      action.type = "button";
+      action.className = "btn btn-sm";
+      action.textContent = "Mark paid";
+      action.onclick = () => { pendingSettle = t.key; renderAll(); };
     }
 
-    row.append(text, amt, btn);
+    row.append(text, amt, action);
     box.append(row);
   }
 }
@@ -1395,7 +1515,16 @@ function wireUi() {
   for (const btn of document.querySelectorAll("[data-settle]")) {
     btn.onclick = () => {
       settleView = btn.dataset.settle;
+      pendingSettle = null;
       for (const b of document.querySelectorAll("[data-settle]")) b.classList.toggle("is-on", b === btn);
+      renderAll();
+    };
+  }
+  for (const btn of document.querySelectorAll("[data-balview]")) {
+    btn.onclick = () => {
+      balView = btn.dataset.balview;
+      openPerson = null;
+      for (const b of document.querySelectorAll("[data-balview]")) b.classList.toggle("is-on", b === btn);
       renderAll();
     };
   }

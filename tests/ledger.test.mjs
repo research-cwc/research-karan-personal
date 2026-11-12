@@ -4,6 +4,7 @@
 import {
   DEFAULT_PEOPLE as PEOPLE, allocate, computeShares, buildLedger,
   minTransfers, directTransfers, ledgerPeople, money, parseRupees, parseNumber,
+  householdsFor, householdLedger, facesFor, DEFAULT_HOUSEHOLDS,
 } from "../ledger.js";
 
 let passed = 0;
@@ -304,6 +305,77 @@ const strip = ({ deleted, deletedBy, deletedTs, ...rest }) => rest;
   const after = { ...L3.net };
   for (const t of minTransfers(L3.net)) { after[t.from] += t.amount; after[t.to] -= t.amount; }
   ok("transfers clear a changed roster", Object.values(after).every((v) => v === 0));
+}
+
+/* ── settling as households ─────────────────────── */
+{
+  // The real board as it stands on the trip, in paise.
+  const net = {
+    Vinay: 10067923, Yash: 1434523, Vatsal: 1401021, Jeet: 23, Sakshi: 23,
+    Rohan: -23, Diksha: -1560623, Dhruvina: -1890477, Minal: -1890477,
+    Varun: -1890477, Dhwani: -1890478, Karan: -1890479, Vidhi: -1890479,
+  };
+  eq("the live board balances", sum(net), 0);
+
+  const L = { people: PEOPLE, net, paid: {}, share: {} };
+  const H = householdLedger(L);
+  const by = Object.fromEntries(H.map((g) => [g.key, g]));
+
+  eq("thirteen people become eight households", H.length, 8);
+  eq("five of them are couples", H.filter((g) => g.couple).length, 5);
+
+  // One owed, one owing: the family nets before anything leaves it.
+  eq("Vatsal and Dhwani net against each other", by["Vatsal+Dhwani"].net, 1401021 - 1890478);
+  ok("and the family owes rather than receives", by["Vatsal+Dhwani"].net < 0);
+  eq("what they would square at home", by["Vatsal+Dhwani"].inside[0].amount, 1401021);
+
+  // Yash is owed, Dhruvina owes more: the family still pays.
+  ok("a family can owe although one of them is owed", by["Yash+Dhruvina"].net < 0 && net.Yash > 0);
+
+  // Both owing.
+  eq("two debts become one", by["Karan+Vidhi"].net, -3780958);
+  eq("nothing to square between them", by["Karan+Vidhi"].inside.length, 0);
+
+  // Both sides of the big one.
+  eq("the family that is owed", by["Vinay+Minal"].net, 10067923 - 1890477);
+
+  // Singles are untouched.
+  eq("a single keeps their own balance", by.Varun.net, -1890477);
+  ok("and is not marked a couple", !by.Varun.couple);
+
+  eq("households still sum to zero", H.reduce((a, g) => a + g.net, 0), 0);
+
+  // Settling by household is fewer payments, and still clears everyone.
+  const perPerson = minTransfers(net);
+  const perHouse = minTransfers(Object.fromEntries(H.map((g) => [g.key, g.net])));
+  ok("fewer payments than settling one by one", perHouse.length < perPerson.length,
+    `${perHouse.length} vs ${perPerson.length}`);
+  ok("never more than one less than the number of households", perHouse.length <= H.length - 1);
+  const after = Object.fromEntries(H.map((g) => [g.key, g.net]));
+  for (const t of perHouse) { after[t.from] += t.amount; after[t.to] -= t.amount; }
+  ok("every household lands on zero", Object.values(after).every((v) => v === 0));
+
+  // A family that is square between themselves asks for nothing.
+  const quiet = householdLedger({ people: ["Karan", "Vidhi", "Varun"], net: { Karan: 500_00, Vidhi: -500_00, Varun: 0 }, paid: {}, share: {} });
+  eq("a family that cancels out owes nothing", quiet.find((g) => g.couple).net, 0);
+  eq("but it still shows what they would square", quiet.find((g) => g.couple).inside[0].amount, 500_00);
+  eq("and no payment is suggested", minTransfers(Object.fromEntries(quiet.map((g) => [g.key, g.net]))).length, 0);
+
+  // A spouse who is not on the trip leaves the other settling alone.
+  const alone = householdsFor(["Karan", "Varun", "Diksha"]);
+  eq("a couple with one person present is not a household", alone.length, 3);
+  ok("and that person settles for themselves", alone.every((g) => !g.couple));
+
+  // Somebody added mid-trip who is in no couple settles alone.
+  const added = householdsFor([...PEOPLE, "Priya"]);
+  eq("a newcomer becomes their own household", added.length, 9);
+  ok("and is not quietly attached to anyone", added.find((g) => g.key === "Priya").members.length === 1);
+
+  // The money is named to whoever is carrying it.
+  eq("the one who owes most pays", facesFor(by["Karan+Vidhi"], net, true), "Karan");
+  eq("the one who is owed most receives", facesFor(by["Vinay+Minal"], net, false), "Vinay");
+  eq("in a mixed family the one owing pays", facesFor(by["Vatsal+Dhwani"], net, true), "Dhwani");
+  eq("and the one owed receives", facesFor(by["Vatsal+Dhwani"], net, false), "Vatsal");
 }
 
 /* ── deleted entries ─────────────────────────── */

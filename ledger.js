@@ -9,6 +9,17 @@ const DEFAULT_PEOPLE = [
   "Jeet", "Dhruvina", "Yash", "Minal", "Vinay", "Varun",
 ];
 
+/* Five couples travel as one wallet; the other three settle for themselves.
+   This only ever affects settling up — every expense, share and balance below
+   is still worked out person by person. */
+const DEFAULT_HOUSEHOLDS = [
+  ["Karan", "Vidhi"],
+  ["Vatsal", "Dhwani"],
+  ["Yash", "Dhruvina"],
+  ["Sakshi", "Jeet"],
+  ["Vinay", "Minal"],
+];
+
 const CATEGORIES = [
   { id: "food",     label: "Food",       color: "#C2561F" },
   { id: "stay",     label: "Stay",       color: "#1B5FA8" },
@@ -137,6 +148,50 @@ const shareNames = (e) => Object.keys(e.sharesPaise || {}).filter((n) => e.share
 function involves(e, who) {
   if (e.type === "settlement") return e.from === who || e.to === who;
   return payerNames(e).includes(who) || shareNames(e).includes(who);
+}
+
+/* ── Households ──────────────────────────────── */
+
+/** Groups the people into households: each listed couple who are both here,
+ *  then everyone else on their own. A couple with only one person present is
+ *  not a household — there is nobody to combine with. */
+function householdsFor(people, pairs = DEFAULT_HOUSEHOLDS) {
+  const taken = new Set();
+  const groups = [];
+  for (const pair of pairs) {
+    const members = pair.filter((n) => people.includes(n));
+    if (members.length < 2) continue;
+    members.forEach((n) => taken.add(n));
+    groups.push({ key: members.join("+"), label: members.join(" & "), members, couple: true });
+  }
+  for (const n of people) {
+    if (taken.has(n)) continue;
+    groups.push({ key: n, label: n, members: [n], couple: false });
+  }
+  return groups;
+}
+
+/** A household's position is simply its members' positions added together, so
+ *  a spouse who is owed cancels a spouse who owes before anything leaves the
+ *  family. `inside` is what they would square between themselves; it is shown
+ *  for information and never asks anyone to move money. */
+function householdLedger(L, pairs = DEFAULT_HOUSEHOLDS) {
+  return householdsFor(L.people, pairs).map((g) => {
+    const net = g.members.reduce((a, n) => a + (L.net[n] || 0), 0);
+    const paid = g.members.reduce((a, n) => a + (L.paid[n] || 0), 0);
+    const share = g.members.reduce((a, n) => a + (L.share[n] || 0), 0);
+    const inside = g.members.length > 1
+      ? minTransfers(Object.fromEntries(g.members.map((n) => [n, L.net[n] || 0])))
+      : [];
+    return { ...g, net, paid, share, inside };
+  });
+}
+
+/** Who in a household should actually send or receive the money: the member
+ *  carrying most of it, so the named person is the one it belongs to. */
+function facesFor(group, net, wantOwing) {
+  const sorted = [...group.members].sort((a, b) => (wantOwing ? (net[a] || 0) - (net[b] || 0) : (net[b] || 0) - (net[a] || 0)));
+  return sorted[0] || group.members[0];
 }
 
 /* ── Ledger ────────────────────────────────────────────────── */
@@ -271,8 +326,9 @@ function directTransfers(pair, people) {
 }
 
 export {
-  DEFAULT_PEOPLE, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
+  DEFAULT_PEOPLE, DEFAULT_HOUSEHOLDS, CATEGORIES, CAT, SETTLE_COLOR, SPLIT_HINTS,
   money, parseRupees, parseNumber, allocate, computeShares,
   normalize, payerNames, shareNames, involves,
   buildLedger, minTransfers, directTransfers, peopleInEntries, ledgerPeople,
+  householdsFor, householdLedger, facesFor,
 };

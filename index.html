@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=8">
+<link rel="stylesheet" href="styles.css?v=9">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231B5FA8'/%3E%3Ctext x='16' y='23' font-family='sans-serif' font-size='18' font-weight='bold' fill='white' text-anchor='middle'%3E%E2%82%B9%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -233,8 +233,14 @@
     <!-- ── Balances ── -->
     <section id="view-balances" class="view" hidden>
       <div class="card">
-        <h2 class="card-title">Where everyone stands</h2>
-        <p class="card-sub">Positive means the trip owes them. Tap a name to see who it's with.</p>
+        <div class="form-head">
+          <h2 class="card-title">Where everyone stands</h2>
+          <div class="seg" role="group" aria-label="How to group balances">
+            <button type="button" class="seg-btn is-on" data-balview="family">By family</button>
+            <button type="button" class="seg-btn" data-balview="person">By person</button>
+          </div>
+        </div>
+        <p class="card-sub" id="balanceSub">Couples count as one wallet. Positive means the trip owes them. Tap a name to open it up.</p>
         <div id="balanceList" class="balances"></div>
         <p id="balanceCheck" class="check"></p>
       </div>
@@ -261,7 +267,8 @@
         <div class="form-head">
           <h2 class="card-title">How to clear it</h2>
           <div class="seg" role="group" aria-label="Settlement view">
-            <button type="button" class="seg-btn is-on" data-settle="simple">Fewest payments</button>
+            <button type="button" class="seg-btn is-on" data-settle="family">By family</button>
+            <button type="button" class="seg-btn" data-settle="simple">By person</button>
             <button type="button" class="seg-btn" data-settle="direct">Who owes whom</button>
           </div>
         </div>
@@ -277,7 +284,7 @@
   </footer>
 </div>
 
-<script src="firebase-config.js?v=8"></script>
-<script type="module" src="app.js?v=8"></script>
+<script src="firebase-config.js?v=9"></script>
+<script type="module" src="app.js?v=9"></script>
 </body>
 </html>

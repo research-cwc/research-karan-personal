@@ -50,9 +50,24 @@ edited it. No delete-and-retype.
 **Settling.** Payments between any two people, partial or full, at any time.
 Overpaying flips the balance rather than breaking it.
 
-**Getting the answer.** Two views, because they answer different questions:
+**Settling as a family.** Five of the thirteen are couples who travel on one
+wallet, so Balances and Settle up both offer a **By family** view: a spouse who
+is owed cancels a spouse who owes, and the family makes one payment instead of
+two. It only affects settling — every expense, share and balance underneath is
+still worked out person by person, and **By person** shows exactly that.
 
-- **Fewest payments** — the smallest set of transfers that clears everyone.
+A family row names the two people the payment will be recorded against, because
+a couple is not a person and nothing should be logged as if it were. A family
+whose two balances cancel out is asked for nothing at all; what they would
+square between themselves is shown, not demanded.
+
+The couples live in `DEFAULT_HOUSEHOLDS` at the top of `ledger.js`. Anyone not
+listed settles for themselves, so a person added mid-trip needs no change.
+
+**Getting the answer.** Three views, because they answer different questions:
+
+- **By family** — couples combined, one payment each.
+- **By person** — the smallest set of transfers that clears everyone.
   Twelve payments at most instead of seventy-eight. Money may move between
   people who never shared an expense; the totals still come out right.
 - **Who owes whom** — the direct debts as they actually arose. More payments,
